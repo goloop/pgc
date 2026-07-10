@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/goloop/pgc/internal/gen"
 	"github.com/goloop/pgc/internal/queryfile"
 )
 
@@ -87,6 +88,11 @@ func (c *compiler) goType(oid uint32, notNull bool, o *queryfile.Override) (stri
 	if !ok {
 		expr, ok = pgTypes[typname]
 	}
+	if !ok && c.cat.IsEnum(oid) {
+		// An enum becomes a named string type with one constant per label
+		// (rendered in models.go); a "types" entry above opts out.
+		expr, ok = c.enumFor(oid, typname), true
+	}
 	if !ok {
 		return "", fmt.Errorf(
 			"unsupported PostgreSQL type %q; map it in pgc.json, e.g. "+
@@ -103,6 +109,23 @@ func (c *compiler) goType(oid uint32, notNull bool, o *queryfile.Override) (stri
 		return "sql.Null[" + expr + "]", nil
 	}
 	return "*" + expr, nil
+}
+
+// enumFor registers (once) and names the generated enum type of an OID.
+func (c *compiler) enumFor(oid uint32, typname string) string {
+	if e, ok := c.enums[oid]; ok {
+		return e.Name
+	}
+	name := gen.CamelCase(typname)
+	e := gen.Enum{Name: name, DBName: typname}
+	for _, label := range c.cat.EnumLabels(oid) {
+		e.Values = append(e.Values, gen.EnumValue{
+			Name:  name + gen.CamelCase(label),
+			Value: label,
+		})
+	}
+	c.enums[oid] = e
+	return name
 }
 
 // inherentlyNullable reports whether an expression already encodes NULL on
@@ -198,6 +221,9 @@ func docFor(q qfQuery) string {
 			"It returns sql.ErrNoRows when no row matches."
 	case "many":
 		return q.Name + " runs the query and returns the matching rows."
+	case "iter":
+		return q.Name + " runs the query and streams the matching rows. " +
+			"Iteration stops at the first error."
 	case "execrows":
 		return q.Name + " runs the query and returns the number of affected rows."
 	default:

@@ -64,7 +64,11 @@ func Run(db DB, cfg config.Config) (*Result, error) {
 		return nil, err
 	}
 
-	c := &compiler{cfg: cfg, cat: cat, models: map[uint32]gen.Model{}}
+	c := &compiler{
+		cfg: cfg, cat: cat,
+		models: map[uint32]gen.Model{},
+		enums:  map[uint32]gen.Enum{},
+	}
 	files := map[string]*gen.SrcFile{}
 	var fileOrder []string
 	for _, d := range ds {
@@ -91,6 +95,12 @@ func Run(db DB, cfg config.Config) (*Result, error) {
 	sort.Slice(in.Models, func(i, j int) bool {
 		return in.Models[i].Name < in.Models[j].Name
 	})
+	for _, e := range c.enums {
+		in.Enums = append(in.Enums, e)
+	}
+	sort.Slice(in.Enums, func(i, j int) bool {
+		return in.Enums[i].Name < in.Enums[j].Name
+	})
 	for _, key := range fileOrder {
 		in.Files = append(in.Files, *files[key])
 	}
@@ -106,6 +116,7 @@ type compiler struct {
 	cfg      config.Config
 	cat      *catalog.Catalog
 	models   map[uint32]gen.Model // tables emitted as model structs
+	enums    map[uint32]gen.Enum  // enum types emitted alongside models
 	warnings []string
 }
 
@@ -135,7 +146,7 @@ func (c *compiler) compileQuery(q qfQuery, st *pgwire.Statement) (gen.Query, err
 	}
 
 	switch q.Command {
-	case "one", "many":
+	case "one", "many", "iter":
 		if ret.Kind == gen.RetNone {
 			return fail(fmt.Errorf("statement returns no rows; use :exec"))
 		}

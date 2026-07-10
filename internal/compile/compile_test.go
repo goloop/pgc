@@ -206,6 +206,110 @@ func TestRunErrors(t *testing.T) {
 	}
 }
 
+// enumDB serves a catalog with orders(id int8 NOT NULL,
+// status order_status NOT NULL, note text NULL) and the order_status enum.
+type enumDB struct{ fakeDB }
+
+func (f *enumDB) Query(sql string) ([][]pgwire.Value, error) {
+	v := func(s string) pgwire.Value { return pgwire.Value{S: s, Valid: true} }
+	switch {
+	case strings.Contains(sql, "pg_enum"):
+		return [][]pgwire.Value{
+			{v("300"), v("pending")},
+			{v("300"), v("paid")},
+		}, nil
+	case strings.Contains(sql, "pg_type"):
+		return [][]pgwire.Value{
+			{v("20"), v("int8"), v("b")},
+			{v("25"), v("text"), v("b")},
+			{v("300"), v("order_status"), v("e")},
+		}, nil
+	case strings.Contains(sql, "pg_attribute"):
+		return [][]pgwire.Value{
+			{v("200"), v("1"), v("id"), v("20"), v("t")},
+			{v("200"), v("2"), v("status"), v("300"), v("t")},
+			{v("200"), v("3"), v("note"), v("25"), v("f")},
+		}, nil
+	case strings.Contains(sql, "pg_class"):
+		return [][]pgwire.Value{{v("200"), v("orders")}}, nil
+	}
+	return nil, nil
+}
+
+func TestRunEnumAndSqlNull(t *testing.T) {
+	sql := "SELECT id, status, note FROM orders WHERE id = $1"
+	dir := writeQueries(t, "-- name: GetOrder :one\n"+sql+";\n")
+
+	db := &enumDB{fakeDB{statements: map[string]*pgwire.Statement{
+		sql: {
+			ParamOIDs: []uint32{20},
+			Columns: []pgwire.Column{
+				{Name: "id", TypeOID: 20, TableOID: 200, Attnum: 1},
+				{Name: "status", TypeOID: 300, TableOID: 200, Attnum: 2},
+				{Name: "note", TypeOID: 25, TableOID: 200, Attnum: 3},
+			},
+		},
+	}}}
+
+	cfg := testConfig(dir)
+	cfg.Nullable = "sqlnull"
+	cfg.Rename = map[string]string{"orders": "Order"}
+
+	res, err := Run(db, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models string
+	for _, f := range res.Files {
+		if f.Name == "models.go" {
+			models = string(f.Data)
+		}
+	}
+
+	for _, want := range []string{
+		"type OrderStatus string",
+		`OrderStatusPending OrderStatus = "pending"`,
+		`OrderStatusPaid    OrderStatus = "paid"`,
+		"Status OrderStatus",
+		// The sqlnull policy wraps the nullable text column.
+		"Note   sql.Null[string]",
+		`"database/sql"`,
+	} {
+		if !strings.Contains(models, want) {
+			t.Errorf("models.go missing %q:\n%s", want, models)
+		}
+	}
+}
+
+func TestRunIterCommand(t *testing.T) {
+	sql := "SELECT id, email FROM users ORDER BY id"
+	dir := writeQueries(t, "-- name: IterUsers :iter\n"+sql+";\n")
+
+	db := &fakeDB{statements: map[string]*pgwire.Statement{
+		sql: {Columns: []pgwire.Column{
+			usersCol(1, "id", 20), usersCol(2, "email", 25),
+		}},
+	}}
+	res, err := Run(db, testConfig(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var users string
+	for _, f := range res.Files {
+		if f.Name == "users.sql.go" {
+			users = string(f.Data)
+		}
+	}
+	for _, want := range []string{
+		"iter.Seq2[IterUsersRow, error]",
+		"// IterUsers runs the query and streams the matching rows. Iteration",
+	} {
+		if !strings.Contains(users, want) {
+			t.Errorf("users.sql.go missing %q:\n%s", want, users)
+		}
+	}
+}
+
 func TestRunDuplicateNames(t *testing.T) {
 	dir := writeQueries(t, `-- name: Same :one
 SELECT id, email FROM users;

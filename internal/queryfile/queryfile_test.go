@@ -66,7 +66,6 @@ func TestParseFileErrors(t *testing.T) {
 	cases := []struct{ name, src, want string }{
 		{"unexported", "-- name: getUser :one\nSELECT 1;", "exported"},
 		{"bad command", "-- name: X :both\nSELECT 1;", "unknown command"},
-		{"iter reserved", "-- name: X :iter\nSELECT 1;", "later phase"},
 		{"empty body", "-- name: X :one\n\n-- name: Y :one\nSELECT 1;", "no SQL body"},
 		{"no queries", "SELECT 1;", "no \"-- name:\""},
 		{"bad override", "-- name: X :one\n-- override: col\nSELECT 1;", "override"},

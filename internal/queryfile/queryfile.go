@@ -38,10 +38,9 @@ type Override struct {
 	Null   string // "notnull", "nullable" or empty
 }
 
-// commands are the supported query kinds. ":iter" is reserved for a later
-// phase and reported with a dedicated message.
+// commands are the supported query kinds.
 var commands = map[string]bool{
-	"one": true, "many": true, "exec": true, "execrows": true,
+	"one": true, "many": true, "exec": true, "execrows": true, "iter": true,
 }
 
 var nameRe = regexp.MustCompile(`^--\s*name:\s*(\S+)\s+:(\S+)\s*$`)
@@ -110,11 +109,6 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 				return nil, err
 			}
 			name, cmd := m[1], m[2]
-			if cmd == "iter" {
-				return nil, fmt.Errorf(
-					"%s:%d: :iter is planned for a later phase; use :many for now",
-					path, lineno)
-			}
 			if !commands[cmd] {
 				return nil, fmt.Errorf("%s:%d: unknown command :%s", path, lineno, cmd)
 			}

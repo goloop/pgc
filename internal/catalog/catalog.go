@@ -46,6 +46,7 @@ type Column struct {
 type Catalog struct {
 	types  map[uint32]Type
 	tables map[uint32]*Table
+	enums  map[uint32][]string // enum type OID to its labels, in sort order
 }
 
 // Load fetches the named type and table OIDs in three batched queries.
@@ -55,6 +56,7 @@ func Load(q Querier, typeOIDs, tableOIDs []uint32) (*Catalog, error) {
 	c := &Catalog{
 		types:  map[uint32]Type{},
 		tables: map[uint32]*Table{},
+		enums:  map[uint32][]string{},
 	}
 	if err := c.loadTables(q, tableOIDs); err != nil {
 		return nil, err
@@ -62,7 +64,49 @@ func Load(q Querier, typeOIDs, tableOIDs []uint32) (*Catalog, error) {
 	if err := c.loadTypes(q, append(typeOIDs, c.ColumnTypeOIDs()...)); err != nil {
 		return nil, err
 	}
+	if err := c.loadEnums(q); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// loadEnums fetches the labels of every loaded enum type, in their declared
+// order.
+func (c *Catalog) loadEnums(q Querier) error {
+	var oids []uint32
+	for oid, t := range c.types {
+		if t.Kind == 'e' {
+			oids = append(oids, oid)
+		}
+	}
+	list := oidList(oids)
+	if list == "" {
+		return nil
+	}
+	rows, err := q.Query(
+		"SELECT enumtypid, enumlabel FROM pg_catalog.pg_enum " +
+			"WHERE enumtypid IN (" + list + ") ORDER BY enumtypid, enumsortorder")
+	if err != nil {
+		return fmt.Errorf("catalog: enums: %w", err)
+	}
+	for _, row := range rows {
+		oid, err := parseOID(row[0])
+		if err != nil {
+			return err
+		}
+		c.enums[oid] = append(c.enums[oid], row[1].S)
+	}
+	return nil
+}
+
+// EnumLabels returns the labels of an enum type OID, or nil for other types.
+func (c *Catalog) EnumLabels(oid uint32) []string {
+	return c.enums[oid]
+}
+
+// IsEnum reports whether an OID is an enum type.
+func (c *Catalog) IsEnum(oid uint32) bool {
+	return c.types[oid].Kind == 'e'
 }
 
 // TypeName returns the pg_type name of an OID.

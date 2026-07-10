@@ -15,8 +15,23 @@ import (
 // Input is one generated package.
 type Input struct {
 	Package string
+	Enums   []Enum
 	Models  []Model
 	Files   []SrcFile
+}
+
+// Enum is a PostgreSQL enum rendered as a named string type with one
+// constant per label.
+type Enum struct {
+	Name   string // Go type name
+	DBName string // PostgreSQL type name
+	Values []EnumValue
+}
+
+// EnumValue is one enum label.
+type EnumValue struct {
+	Name  string // Go constant name, e.g. OrderStatusPending
+	Value string // database label, e.g. pending
 }
 
 // Model is a struct mirroring one database table.
@@ -98,7 +113,7 @@ func Render(in Input) ([]OutFile, error) {
 	if err := add("db.go", emitDB(in.Package)); err != nil {
 		return nil, err
 	}
-	if len(in.Models) > 0 {
+	if len(in.Models) > 0 || len(in.Enums) > 0 {
 		if err := add("models.go", emitModels(in)); err != nil {
 			return nil, err
 		}
@@ -165,6 +180,16 @@ func emitModels(in Input) string {
 	fmt.Fprintf(&b, "\npackage %s\n", in.Package)
 	b.WriteString(emitImports(nil, types))
 
+	for _, e := range in.Enums {
+		fmt.Fprintf(&b, "\n// %s mirrors the PostgreSQL enum %s.\n", e.Name, e.DBName)
+		fmt.Fprintf(&b, "type %s string\n", e.Name)
+		fmt.Fprintf(&b, "\n// The %s values.\nconst (\n", e.DBName)
+		for _, v := range e.Values {
+			fmt.Fprintf(&b, "\t%s %s = %q\n", v.Name, e.Name, v.Value)
+		}
+		b.WriteString(")\n")
+	}
+
 	for _, m := range in.Models {
 		fmt.Fprintf(&b, "\n// %s mirrors one row of the %s table.\n", m.Name, m.Table)
 		fmt.Fprintf(&b, "type %s struct {\n", m.Name)
@@ -178,8 +203,12 @@ func emitModels(in Input) string {
 
 // emitFile renders the queries of one source file.
 func emitFile(pkg string, f SrcFile) string {
+	base := []string{"context"}
 	var types []string
 	for _, q := range f.Queries {
+		if q.Command == "iter" {
+			base = append(base, "iter")
+		}
 		for _, p := range q.Params {
 			types = append(types, p.Type)
 		}
@@ -197,7 +226,7 @@ func emitFile(pkg string, f SrcFile) string {
 	b.WriteString(header)
 	fmt.Fprintf(&b, "// Source: %s\n", f.Source)
 	fmt.Fprintf(&b, "\npackage %s\n", pkg)
-	b.WriteString(emitImports([]string{"context"}, types))
+	b.WriteString(emitImports(base, types))
 
 	for _, q := range f.Queries {
 		emitQuery(&b, q)
@@ -336,6 +365,27 @@ func emitQuery(b *strings.Builder, q Query) {
 		fmt.Fprintf(b, "\t\t%s = append(%s, %s)\n", sliceVar, sliceVar, itemVar)
 		b.WriteString("\t}\n")
 		fmt.Fprintf(b, "\treturn %s, rows.Err()\n}\n", sliceVar)
+
+	case "iter":
+		zeroVar := unique("zero", taken)
+		fmt.Fprintf(b, "func (q *Queries) %s(ctx context.Context%s) iter.Seq2[%s, error] {\n",
+			q.Name, sig, q.Ret.Type)
+		fmt.Fprintf(b, "\treturn func(yield func(%s, error) bool) {\n", q.Ret.Type)
+		fmt.Fprintf(b, "\t\tvar %s %s\n", zeroVar, q.Ret.Type)
+		fmt.Fprintf(b, "\t\trows, err := q.db.QueryContext(ctx, %s%s)\n", constName, callArgs)
+		fmt.Fprintf(b, "\t\tif err != nil {\n\t\t\tyield(%s, err)\n\t\t\treturn\n\t\t}\n",
+			zeroVar)
+		b.WriteString("\t\tdefer rows.Close()\n\n")
+		b.WriteString("\t\tfor rows.Next() {\n")
+		fmt.Fprintf(b, "\t\t\tvar %s %s\n", itemVar, q.Ret.Type)
+		fmt.Fprintf(b, "\t\t\tif err := rows.Scan(%s); err != nil {\n",
+			scanArgs(itemVar, q.Ret))
+		fmt.Fprintf(b, "\t\t\t\tyield(%s, err)\n\t\t\t\treturn\n\t\t\t}\n", zeroVar)
+		fmt.Fprintf(b, "\t\t\tif !yield(%s, nil) {\n\t\t\t\treturn\n\t\t\t}\n", itemVar)
+		b.WriteString("\t\t}\n")
+		fmt.Fprintf(b, "\t\tif err := rows.Err(); err != nil {\n\t\t\tyield(%s, err)\n\t\t}\n",
+			zeroVar)
+		b.WriteString("\t}\n}\n")
 	}
 }
 

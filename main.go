@@ -1,10 +1,13 @@
-// Command pgc compiles SQL queries into type-safe Go code for PostgreSQL,
-// using a live development database as its type oracle.
+// Command pgc compiles annotated SQL queries into a type-safe Go package
+// for PostgreSQL, using a live development database as its type oracle:
+// every statement is prepared and described over the wire protocol - never
+// executed and never parsed by pgc itself - so parameter and column types
+// come from the server that will run them.
 //
-// This is the phase-0 spike: the describe command connects to the database
-// named by PGC_DATABASE_URL (or DATABASE_URL, or -d) and prints what the
-// server reports about a query - every parameter type and every result
-// column with its nullability - without executing it.
+// The generate command writes the package described by pgc.json; check runs
+// the same compilation without writing, for CI; describe prints what the
+// server reports about a single statement. The connection URL comes from
+// PGC_DATABASE_URL, DATABASE_URL or the -d flag.
 package main
 
 import (
@@ -22,7 +25,7 @@ import (
 	"github.com/goloop/pgc/internal/pgwire"
 )
 
-const version = "0.0.0-dev (phase 0)"
+const version = "0.1.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
