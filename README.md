@@ -63,10 +63,13 @@ err = q.WithTx(tx).DeleteUser(ctx, u.ID)
 
 Every parameter and result is typed from the live schema: `bigint` becomes
 `int64`, a nullable `text` becomes `*string`, `timestamptz` becomes
-`time.Time`, a PostgreSQL enum becomes a named string type with constants.
-When the full column set of a table is selected, the query returns the
-table's model struct; projections get their own row struct; a single column
-comes back as a bare value.
+`time.Time`, a PostgreSQL enum becomes a named string type with constants,
+`text[]` becomes `[]string` (including `WHERE id = ANY($1)`), and a domain
+resolves to its base type. When the full column set of a table is selected,
+the query returns the table's model struct; projections get their own row
+struct; a single column comes back as a bare value; a joined table can be
+nested with `-- embed:`. Optional extras: `json:"column"` tags and a
+`Querier` interface for test doubles.
 
 ## Commands
 

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-11
+
+### Added
+- One-dimensional arrays of the basic types map to plain Go slices
+  (`bigint[]` to `[]int64`), scanned and sent through generated adapters in
+  `pgarray.go` that speak the array text format - no driver-specific array
+  support needed. A nil slice is NULL; NULL elements and multidimensional
+  arrays are rejected with a clear error.
+- `-- embed: <table> [as <Field>]` nests a joined table's full row as its
+  model struct inside the query's row struct.
+- Go types from other modules in overrides and the `types` map, written
+  with their full import path (`github.com/google/uuid.UUID`).
+- `"json_tags": true` adds `json:"column_name"` tags to model and row
+  structs.
+- `"interface": true` emits `querier.go` with a `Querier` interface that
+  `*Queries` satisfies.
+- The `rename` map accepts schema-qualified table names
+  (`"audit.users": "AuditUser"`).
+- Parameter names are inferred from `= ANY($1)` / `ALL($1)` comparisons.
+
+### Fixed
+- Domains now resolve to their base types instead of failing as
+  unsupported.
+- Two same-named tables from different schemas (or any other generated name
+  collision) are reported as an error instead of emitting invalid Go.
+
 ## [0.1.0] - 2026-07-10
 
 Initial release.

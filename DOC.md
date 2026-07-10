@@ -16,6 +16,8 @@ Ukrainian version: **[DOC.UK.md](DOC.UK.md)**.
 - [Type mapping](#type-mapping)
 - [Nullability](#nullability)
 - [Enums](#enums)
+- [Arrays](#arrays)
+- [Embedded rows](#embedded-rows)
 - [Generated code](#generated-code)
 - [CI recipe](#ci-recipe)
 - [Scope](#scope)
@@ -125,6 +127,16 @@ explicit Go type is taken verbatim (its nullability included); a bare
 An override that names a column or parameter the statement does not have is
 an error - typos never pass silently.
 
+A Go type from another module is written with its full import path:
+
+```sql
+-- override: $1 github.com/google/uuid.UUID
+```
+
+The import is added to the generated file and the type is referred to by its
+package selector. The type must implement `sql.Scanner`/`driver.Valuer` as
+usual. The same form works in the `types` map of the configuration.
+
 ## Configuration
 
 `pgc.json` is optional; the defaults describe a conventional layout:
@@ -135,12 +147,15 @@ an error - typos never pass silently.
   "out": "internal/db",
   "package": "db",
   "nullable": "pointer",
+  "json_tags": true,
+  "interface": true,
   "types": {
     "uuid": "string",
     "numeric": "string"
   },
   "rename": {
-    "users": "User"
+    "users": "User",
+    "audit.users": "AuditUser"
   }
 }
 ```
@@ -150,11 +165,18 @@ an error - typos never pass silently.
 - **package** - the package name; defaults to the base of `out`.
 - **nullable** - how nullable columns are rendered: `pointer` (`*string`,
   the default) or `sqlnull` (`sql.Null[string]`).
+- **json_tags** - add `` `json:"column_name"` `` tags to model and row
+  structs.
+- **interface** - emit `querier.go` with a `Querier` interface that
+  `*Queries` satisfies, for callers that want a test double.
 - **types** - per-PostgreSQL-type Go replacements, applied before the
-  nullability wrapping.
-- **rename** - table name to struct name. Without an entry the CamelCase of
-  the table name is used as-is: pgc never guesses singular forms, so `users`
-  is `Users` until you say `"users": "User"`.
+  nullability wrapping; values may use full import paths
+  (`"uuid": "github.com/google/uuid.UUID"`).
+- **rename** - table name (optionally schema-qualified) to struct name.
+  Without an entry the CamelCase of the table name is used as-is: pgc never
+  guesses singular forms, so `users` is `Users` until you say
+  `"users": "User"`. Two same-named tables from different schemas are
+  reported as a collision until one is renamed.
 
 ## Type mapping
 
@@ -174,11 +196,15 @@ an error - typos never pass silently.
 | time, timetz, interval | string | *string |
 | inet, cidr, macaddr | string | *string |
 | enum | named string type | *T |
+| array of a basic type | []T | []T (nil is NULL) |
 
 Types without a natural standard-library counterpart (uuid, numeric,
 interval) default to `string`; change that per type with `types` or per
 column with an override. With `"nullable": "sqlnull"` the nullable column
 becomes `sql.Null[T]` instead of `*T`.
+
+A domain resolves to its base type automatically; a `types` entry for the
+domain's own name takes precedence when you want something else.
 
 ## Nullability
 
@@ -213,6 +239,49 @@ const (
 
 Map the enum in `types` (for example to plain `string`) to opt out.
 
+## Arrays
+
+One-dimensional arrays of the basic types (integers, floats, booleans and
+the text-like types, uuid and numeric included) map to plain Go slices:
+`bigint[]` is `[]int64`, `text[]` is `[]string`. A nil slice is SQL NULL; an
+empty slice is an empty array. Array-typed parameters work in any typed
+position, including `WHERE id = ANY($1)`.
+
+The adapters live in a generated `pgarray.go` and speak the array text
+format explicitly - no driver-specific array support is required. Two cases
+are rejected loudly rather than guessed: a NULL *element* inside an array
+(map the column to plain `string` with an override to carry it) and
+multidimensional arrays.
+
+## Embedded rows
+
+When a query joins in a whole row of another table, nest it instead of
+flattening:
+
+```sql
+-- name: OrdersWithBuyer :many
+-- embed: users as Buyer
+SELECT o.id, o.status, u.id, u.email, u.created_at
+FROM orders o
+JOIN users u ON u.id = o.user_id;
+```
+
+```go
+type OrdersWithBuyerRow struct {
+	ID     int64
+	Status OrderStatus
+	Buyer  User
+}
+```
+
+`-- embed: <table> [as <Field>]` matches the first contiguous run of result
+columns that is exactly the table's full column list, in order - select the
+table's columns together (`u.*` does) for it to apply. Repeat the annotation
+to embed several tables; give fields explicit names with `as` when embedding
+the same table twice. A bare table name that exists in more than one schema
+must be qualified (`public.users`). An annotation that matches nothing is an
+error that says so.
+
 ## Generated code
 
 `db.go` carries the plumbing, shared by every query:
@@ -235,6 +304,10 @@ Up to three parameters stay positional (`GetUser(ctx, id int64)`); four or
 more become a `XxxParams` struct. Scanning is always explicit `row.Scan`
 calls - there is no reflection at runtime and nothing to configure.
 
+With `"interface": true` a `querier.go` is added: a `Querier` interface with
+one method per query, satisfied by `*Queries`, so tests can substitute their
+own implementation.
+
 ## CI recipe
 
 ```sh
@@ -252,5 +325,9 @@ is wanted.
 
 pgc generates query bindings; it deliberately is not an ORM, does not manage
 migrations and does not run application queries itself - the generated code
-speaks plain `database/sql`, and the driver choice stays yours. Array
-columns and custom Go types from third-party packages are not supported yet.
+speaks plain `database/sql`, and the driver choice stays yours.
+
+Known limits: multidimensional arrays and NULL elements inside arrays are
+rejected (map such columns to plain `string` with an override); view columns
+have no `attnotnull` in the catalog, so they come out nullable unless
+overridden; batch statements and COPY are not generated.
