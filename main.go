@@ -12,10 +12,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/goloop/pgc/internal/compile"
+	"github.com/goloop/pgc/internal/config"
 	"github.com/goloop/pgc/internal/pgwire"
 )
 
@@ -34,6 +37,10 @@ func run(args []string) error {
 		return fmt.Errorf("no command")
 	}
 	switch args[0] {
+	case "generate":
+		return generateCmd(args[1:], true)
+	case "check":
+		return generateCmd(args[1:], false)
 	case "describe":
 		return describeCmd(args[1:])
 	case "version":
@@ -52,12 +59,86 @@ func usage() {
 	fmt.Fprint(os.Stderr, `pgc - SQL to Go compiler for PostgreSQL
 
 Usage:
+  pgc generate [-c pgc.json] [-d url]  compile the queries into a Go package
+  pgc check    [-c pgc.json] [-d url]  compile without writing, for CI
   pgc describe [-d url] "SELECT ..."   print parameter and column types
   pgc version                          print the version
 
 The database URL comes from -d, PGC_DATABASE_URL or DATABASE_URL:
   postgres://user:password@host:5432/dbname?sslmode=disable
 `)
+}
+
+// generateCmd runs the compiler; with write=false it only verifies.
+func generateCmd(args []string, write bool) error {
+	fs := flag.NewFlagSet("generate", flag.ContinueOnError)
+	cfgPath := fs.String("c", "pgc.json", "config file")
+	dsn := fs.String("d", "", "database url (default: $PGC_DATABASE_URL)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	explicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "c" {
+			explicit = true
+		}
+	})
+	cfg, err := config.Load(*cfgPath, explicit)
+	if err != nil {
+		return err
+	}
+
+	conn, err := dial(*dsn)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	res, err := compile.Run(conn, cfg)
+	if err != nil {
+		return err
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+
+	if !write {
+		fmt.Printf("ok: %d file(s) compile cleanly\n", len(res.Files))
+		return nil
+	}
+
+	if err := os.MkdirAll(cfg.Out, 0o755); err != nil {
+		return err
+	}
+	for _, f := range res.Files {
+		path := filepath.Join(cfg.Out, f.Name)
+		if err := os.WriteFile(path, f.Data, 0o644); err != nil {
+			return err
+		}
+		fmt.Println(path)
+	}
+	return nil
+}
+
+// dial resolves the connection URL and connects.
+func dial(dsn string) (*pgwire.Conn, error) {
+	if dsn == "" {
+		dsn = os.Getenv("PGC_DATABASE_URL")
+	}
+	if dsn == "" {
+		dsn = os.Getenv("DATABASE_URL")
+	}
+	if dsn == "" {
+		return nil, fmt.Errorf("no database url: set PGC_DATABASE_URL or pass -d")
+	}
+	cfg, err := pgwire.ParseURL(dsn)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return pgwire.Dial(ctx, cfg)
 }
 
 func describeCmd(args []string) error {
@@ -71,25 +152,7 @@ func describeCmd(args []string) error {
 	}
 	query := fs.Arg(0)
 
-	url := *dsn
-	if url == "" {
-		url = os.Getenv("PGC_DATABASE_URL")
-	}
-	if url == "" {
-		url = os.Getenv("DATABASE_URL")
-	}
-	if url == "" {
-		return fmt.Errorf("no database url: set PGC_DATABASE_URL or pass -d")
-	}
-
-	cfg, err := pgwire.ParseURL(url)
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	conn, err := pgwire.Dial(ctx, cfg)
+	conn, err := dial(*dsn)
 	if err != nil {
 		return err
 	}
