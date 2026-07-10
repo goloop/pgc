@@ -1,0 +1,232 @@
+// Command pgc compiles SQL queries into type-safe Go code for PostgreSQL,
+// using a live development database as its type oracle.
+//
+// This is the phase-0 spike: the describe command connects to the database
+// named by PGC_DATABASE_URL (or DATABASE_URL, or -d) and prints what the
+// server reports about a query - every parameter type and every result
+// column with its nullability - without executing it.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/goloop/pgc/internal/pgwire"
+)
+
+const version = "0.0.0-dev (phase 0)"
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "pgc:", err)
+		os.Exit(1)
+	}
+}
+
+func run(args []string) error {
+	if len(args) == 0 {
+		usage()
+		return fmt.Errorf("no command")
+	}
+	switch args[0] {
+	case "describe":
+		return describeCmd(args[1:])
+	case "version":
+		fmt.Println("pgc", version)
+		return nil
+	case "help", "-h", "--help":
+		usage()
+		return nil
+	default:
+		usage()
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `pgc - SQL to Go compiler for PostgreSQL
+
+Usage:
+  pgc describe [-d url] "SELECT ..."   print parameter and column types
+  pgc version                          print the version
+
+The database URL comes from -d, PGC_DATABASE_URL or DATABASE_URL:
+  postgres://user:password@host:5432/dbname?sslmode=disable
+`)
+}
+
+func describeCmd(args []string) error {
+	fs := flag.NewFlagSet("describe", flag.ContinueOnError)
+	dsn := fs.String("d", "", "database url (default: $PGC_DATABASE_URL)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("describe expects exactly one SQL argument")
+	}
+	query := fs.Arg(0)
+
+	url := *dsn
+	if url == "" {
+		url = os.Getenv("PGC_DATABASE_URL")
+	}
+	if url == "" {
+		url = os.Getenv("DATABASE_URL")
+	}
+	if url == "" {
+		return fmt.Errorf("no database url: set PGC_DATABASE_URL or pass -d")
+	}
+
+	cfg, err := pgwire.ParseURL(url)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := pgwire.Dial(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	st, err := conn.Describe(query)
+	if err != nil {
+		return err
+	}
+
+	names, err := typeNames(conn, st)
+	if err != nil {
+		return err
+	}
+	tables, notNull, err := columnOrigins(conn, st.Columns)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("server %s\n\n", conn.Parameter("server_version"))
+
+	fmt.Println("Parameters:")
+	if len(st.ParamOIDs) == 0 {
+		fmt.Println("  (none)")
+	}
+	for i, oid := range st.ParamOIDs {
+		fmt.Printf("  $%-3d %s\n", i+1, names[oid])
+	}
+
+	fmt.Println("\nColumns:")
+	if len(st.Columns) == 0 {
+		fmt.Println("  (statement returns no rows)")
+	}
+	for _, col := range st.Columns {
+		null := "nullable"
+		origin := "(expression)"
+		if col.TableOID != 0 {
+			origin = fmt.Sprintf("%s.%s", tables[col.TableOID], col.Name)
+			if notNull[originKey{col.TableOID, col.Attnum}] {
+				null = "not null"
+			}
+		}
+		fmt.Printf("  %-20s %-12s %-9s %s\n", col.Name, names[col.TypeOID], null, origin)
+	}
+	return nil
+}
+
+// typeNames resolves every OID used by the statement to its pg_type name.
+func typeNames(conn *pgwire.Conn, st *pgwire.Statement) (map[uint32]string, error) {
+	oids := map[uint32]bool{}
+	for _, oid := range st.ParamOIDs {
+		oids[oid] = true
+	}
+	for _, col := range st.Columns {
+		oids[col.TypeOID] = true
+	}
+	names := map[uint32]string{}
+	if len(oids) == 0 {
+		return names, nil
+	}
+
+	rows, err := conn.Query(
+		"SELECT oid, typname FROM pg_catalog.pg_type WHERE oid IN (" +
+			joinOIDs(oids) + ")")
+	if err != nil {
+		return nil, fmt.Errorf("type lookup: %w", err)
+	}
+	for _, row := range rows {
+		var oid uint32
+		fmt.Sscanf(row[0].S, "%d", &oid)
+		names[oid] = row[1].S
+	}
+	return names, nil
+}
+
+type originKey struct {
+	table  uint32
+	attnum int16
+}
+
+// columnOrigins resolves table names and attnotnull for every column that
+// has a table origin.
+func columnOrigins(
+	conn *pgwire.Conn,
+	cols []pgwire.Column,
+) (map[uint32]string, map[originKey]bool, error) {
+	tables := map[uint32]string{}
+	notNull := map[originKey]bool{}
+
+	tableOIDs := map[uint32]bool{}
+	var pairs []string
+	for _, col := range cols {
+		if col.TableOID == 0 {
+			continue
+		}
+		tableOIDs[col.TableOID] = true
+		pairs = append(pairs, fmt.Sprintf("(%d,%d)", col.TableOID, col.Attnum))
+	}
+	if len(tableOIDs) == 0 {
+		return tables, notNull, nil
+	}
+
+	rows, err := conn.Query(
+		"SELECT oid, relname FROM pg_catalog.pg_class WHERE oid IN (" +
+			joinOIDs(tableOIDs) + ")")
+	if err != nil {
+		return nil, nil, fmt.Errorf("table lookup: %w", err)
+	}
+	for _, row := range rows {
+		var oid uint32
+		fmt.Sscanf(row[0].S, "%d", &oid)
+		tables[oid] = row[1].S
+	}
+
+	rows, err = conn.Query(
+		"SELECT attrelid, attnum, attnotnull FROM pg_catalog.pg_attribute " +
+			"WHERE (attrelid, attnum) IN (" + strings.Join(pairs, ",") + ")")
+	if err != nil {
+		return nil, nil, fmt.Errorf("nullability lookup: %w", err)
+	}
+	for _, row := range rows {
+		var table uint32
+		var attnum int16
+		fmt.Sscanf(row[0].S, "%d", &table)
+		fmt.Sscanf(row[1].S, "%d", &attnum)
+		notNull[originKey{table, attnum}] = row[2].S == "t"
+	}
+	return tables, notNull, nil
+}
+
+// joinOIDs renders a set of OIDs as "1,2,3" for an IN list. OIDs are server
+// integers, never user input.
+func joinOIDs(oids map[uint32]bool) string {
+	list := make([]string, 0, len(oids))
+	for oid := range oids {
+		list = append(list, fmt.Sprint(oid))
+	}
+	sort.Strings(list)
+	return strings.Join(list, ",")
+}
