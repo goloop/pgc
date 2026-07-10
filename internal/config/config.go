@@ -33,10 +33,18 @@ type Config struct {
 	// {"uuid": "string"} or {"numeric": "string"}.
 	Types map[string]string `json:"types"`
 
-	// Rename maps table names to Go struct names, e.g. {"users": "User"}.
-	// Without an entry the CamelCase of the table name is used as-is;
-	// pgc never guesses singular forms.
+	// Rename maps table names to Go struct names, e.g. {"users": "User"}
+	// or, schema-qualified, {"audit.users": "AuditUser"}. Without an entry
+	// the CamelCase of the table name is used as-is; pgc never guesses
+	// singular forms.
 	Rename map[string]string `json:"rename"`
+
+	// JSONTags adds `json:"column_name"` tags to model and row structs.
+	JSONTags bool `json:"json_tags"`
+
+	// Interface emits querier.go with a Querier interface that *Queries
+	// satisfies, for callers that want a test double.
+	Interface bool `json:"interface"`
 }
 
 // Load reads path. A missing file is fine unless explicit is true - the

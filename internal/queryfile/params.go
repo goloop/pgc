@@ -73,6 +73,14 @@ func neighborName(toks []token, i int) string {
 			return id.val
 		}
 	}
+	// column = ANY($1) / ALL($1).
+	if at(toks, i-1).val == "(" &&
+		(at(toks, i-2).val == "any" || at(toks, i-2).val == "all") &&
+		isCompare(at(toks, i-3)) {
+		if id := at(toks, i-4); id.kind == tokIdent && !isKeyword(id.val) {
+			return id.val
+		}
+	}
 	return ""
 }
 

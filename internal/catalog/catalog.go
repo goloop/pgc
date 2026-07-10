@@ -21,14 +21,18 @@ type Querier interface {
 
 // Type is one pg_type row.
 type Type struct {
-	OID  uint32
-	Name string // typname, e.g. int8, timestamptz
-	Kind byte   // typtype: b base, e enum, d domain, ...
+	OID      uint32
+	Name     string // typname, e.g. int8, timestamptz
+	Kind     byte   // typtype: b base, e enum, d domain, ...
+	Category byte   // typcategory: A marks arrays
+	Elem     uint32 // element type OID for arrays, else 0
+	Base     uint32 // base type OID for domains, else 0
 }
 
 // Table is one pg_class relation with its live columns.
 type Table struct {
 	OID     uint32
+	Schema  string // namespace name, e.g. public
 	Name    string // relname
 	Columns []Column
 }
@@ -121,6 +125,16 @@ func (c *Catalog) Table(oid uint32) (*Table, bool) {
 	return t, ok
 }
 
+// Tables returns every loaded table, in OID order.
+func (c *Catalog) Tables() []*Table {
+	tables := make([]*Table, 0, len(c.tables))
+	for _, t := range c.tables {
+		tables = append(tables, t)
+	}
+	sort.Slice(tables, func(i, j int) bool { return tables[i].OID < tables[j].OID })
+	return tables
+}
+
 // NotNull reports pg_attribute.attnotnull for one table column.
 func (c *Catalog) NotNull(table uint32, attnum int16) bool {
 	t, ok := c.tables[table]
@@ -135,34 +149,71 @@ func (c *Catalog) NotNull(table uint32, attnum int16) bool {
 	return false
 }
 
+// loadTypes fetches type rows, then follows array element and domain base
+// references until the set is closed, so an "_int4" always brings its
+// "int4" along.
 func (c *Catalog) loadTypes(q Querier, oids []uint32) error {
-	list := oidList(oids)
-	if list == "" {
-		return nil
-	}
-	rows, err := q.Query(
-		"SELECT oid, typname, typtype FROM pg_catalog.pg_type WHERE oid IN (" +
-			list + ")")
-	if err != nil {
-		return fmt.Errorf("catalog: types: %w", err)
-	}
-	for _, row := range rows {
-		oid, err := parseOID(row[0])
+	pending := oids
+	for round := 0; len(pending) > 0; round++ {
+		if round > 8 {
+			return fmt.Errorf("catalog: type reference chain too deep")
+		}
+		list := oidList(pending)
+		if list == "" {
+			return nil
+		}
+		rows, err := q.Query(
+			"SELECT oid, typname, typtype, typcategory, typelem, typbasetype " +
+				"FROM pg_catalog.pg_type WHERE oid IN (" + list + ")")
 		if err != nil {
-			return err
+			return fmt.Errorf("catalog: types: %w", err)
 		}
-		t := Type{OID: oid, Name: row[1].S}
-		if row[2].S != "" {
-			t.Kind = row[2].S[0]
+		for _, row := range rows {
+			oid, err := parseOID(row[0])
+			if err != nil {
+				return err
+			}
+			t := Type{OID: oid, Name: row[1].S}
+			if row[2].S != "" {
+				t.Kind = row[2].S[0]
+			}
+			if row[3].S != "" {
+				t.Category = row[3].S[0]
+			}
+			if t.Elem, err = parseOID(row[4]); err != nil {
+				return err
+			}
+			if t.Base, err = parseOID(row[5]); err != nil {
+				return err
+			}
+			c.types[oid] = t
 		}
-		c.types[oid] = t
-	}
-	for _, oid := range oids {
-		if _, ok := c.types[oid]; !ok {
-			return fmt.Errorf("catalog: unknown type oid %d", oid)
+		for _, oid := range pending {
+			if _, ok := c.types[oid]; !ok {
+				return fmt.Errorf("catalog: unknown type oid %d", oid)
+			}
 		}
+
+		// Follow references that are not loaded yet.
+		var next []uint32
+		for _, t := range c.types {
+			for _, ref := range []uint32{t.Elem, t.Base} {
+				if ref != 0 {
+					if _, ok := c.types[ref]; !ok {
+						next = append(next, ref)
+					}
+				}
+			}
+		}
+		pending = next
 	}
 	return nil
+}
+
+// Type returns the full pg_type row of an OID.
+func (c *Catalog) Type(oid uint32) (Type, bool) {
+	t, ok := c.types[oid]
+	return t, ok
 }
 
 func (c *Catalog) loadTables(q Querier, oids []uint32) error {
@@ -171,8 +222,9 @@ func (c *Catalog) loadTables(q Querier, oids []uint32) error {
 		return nil
 	}
 	rows, err := q.Query(
-		"SELECT oid, relname FROM pg_catalog.pg_class WHERE oid IN (" +
-			list + ")")
+		"SELECT c.oid, c.relname, n.nspname FROM pg_catalog.pg_class c " +
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+			"WHERE c.oid IN (" + list + ")")
 	if err != nil {
 		return fmt.Errorf("catalog: tables: %w", err)
 	}
@@ -181,7 +233,7 @@ func (c *Catalog) loadTables(q Querier, oids []uint32) error {
 		if err != nil {
 			return err
 		}
-		c.tables[oid] = &Table{OID: oid, Name: row[1].S}
+		c.tables[oid] = &Table{OID: oid, Name: row[1].S, Schema: row[2].S}
 	}
 	for _, oid := range oids {
 		if _, ok := c.tables[oid]; !ok {

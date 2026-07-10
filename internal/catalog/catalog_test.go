@@ -26,11 +26,11 @@ func v(s string) pgwire.Value { return pgwire.Value{S: s, Valid: true} }
 func TestLoad(t *testing.T) {
 	q := &fakeQuerier{byNeedle: map[string][][]pgwire.Value{
 		"pg_type": {
-			{v("20"), v("int8"), v("b")},
-			{v("25"), v("text"), v("b")},
+			{v("20"), v("int8"), v("b"), v("N"), v("0"), v("0")},
+			{v("25"), v("text"), v("b"), v("S"), v("0"), v("0")},
 		},
 		"pg_class": {
-			{v("100"), v("users")},
+			{v("100"), v("users"), v("public")},
 		},
 		"pg_attribute": {
 			{v("100"), v("1"), v("id"), v("20"), v("t")},

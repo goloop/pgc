@@ -31,8 +31,8 @@ func (f *fakeDB) Query(sql string) ([][]pgwire.Value, error) {
 	switch {
 	case strings.Contains(sql, "pg_type"):
 		return [][]pgwire.Value{
-			{v("20"), v("int8"), v("b")},
-			{v("25"), v("text"), v("b")},
+			{v("20"), v("int8"), v("b"), v("N"), v("0"), v("0")},
+			{v("25"), v("text"), v("b"), v("S"), v("0"), v("0")},
 		}, nil
 	case strings.Contains(sql, "pg_attribute"):
 		return [][]pgwire.Value{
@@ -41,7 +41,7 @@ func (f *fakeDB) Query(sql string) ([][]pgwire.Value, error) {
 			{v("100"), v("3"), v("bio"), v("25"), v("f")},
 		}, nil
 	case strings.Contains(sql, "pg_class"):
-		return [][]pgwire.Value{{v("100"), v("users")}}, nil
+		return [][]pgwire.Value{{v("100"), v("users"), v("public")}}, nil
 	}
 	return nil, nil
 }
@@ -220,9 +220,9 @@ func (f *enumDB) Query(sql string) ([][]pgwire.Value, error) {
 		}, nil
 	case strings.Contains(sql, "pg_type"):
 		return [][]pgwire.Value{
-			{v("20"), v("int8"), v("b")},
-			{v("25"), v("text"), v("b")},
-			{v("300"), v("order_status"), v("e")},
+			{v("20"), v("int8"), v("b"), v("N"), v("0"), v("0")},
+			{v("25"), v("text"), v("b"), v("S"), v("0"), v("0")},
+			{v("300"), v("order_status"), v("e"), v("E"), v("0"), v("0")},
 		}, nil
 	case strings.Contains(sql, "pg_attribute"):
 		return [][]pgwire.Value{
@@ -231,7 +231,7 @@ func (f *enumDB) Query(sql string) ([][]pgwire.Value, error) {
 			{v("200"), v("3"), v("note"), v("25"), v("f")},
 		}, nil
 	case strings.Contains(sql, "pg_class"):
-		return [][]pgwire.Value{{v("200"), v("orders")}}, nil
+		return [][]pgwire.Value{{v("200"), v("orders"), v("public")}}, nil
 	}
 	return nil, nil
 }

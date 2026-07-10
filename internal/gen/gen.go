@@ -18,6 +18,21 @@ type Input struct {
 	Enums   []Enum
 	Models  []Model
 	Files   []SrcFile
+
+	// TypeImports maps a type expression to the import path it needs, for
+	// types from packages other than the well-known standard ones.
+	TypeImports map[string]string
+
+	// ArrayHelpers names the array adapter types (int64Array, ...) that
+	// queries use; when non-empty a pgarray.go is emitted.
+	ArrayHelpers []string
+
+	// JSONTags adds `json:"column_name"` tags to model and row structs.
+	JSONTags bool
+
+	// EmitInterface emits querier.go with a Querier interface that
+	// *Queries satisfies.
+	EmitInterface bool
 }
 
 // Enum is a PostgreSQL enum rendered as a named string type with one
@@ -46,6 +61,25 @@ type Model struct {
 type Field struct {
 	Name string // database name, e.g. created_at
 	Type string // Go type expression, e.g. time.Time
+
+	// GoName overrides the derived CamelCase field name (used by embeds).
+	GoName string
+
+	// Helper names the array adapter used to scan and send this field,
+	// e.g. int64Array; empty for ordinary types.
+	Helper string
+
+	// Embed nests another struct's fields: the field is scanned as its
+	// children, one level deep.
+	Embed []Field
+}
+
+// goName returns the Go field name.
+func (f Field) goName() string {
+	if f.GoName != "" {
+		return f.GoName
+	}
+	return CamelCase(f.Name)
 }
 
 // SrcFile is the queries of one source .sql file.
@@ -67,8 +101,9 @@ type Query struct {
 
 // Param is one $N argument with its database-side name and Go type.
 type Param struct {
-	Name string // raw name, e.g. user_id or arg2
-	Type string
+	Name   string // raw name, e.g. user_id or arg2
+	Type   string
+	Helper string // array adapter for sending, e.g. int64Array
 }
 
 // RetKind says what a query returns per row.
@@ -83,10 +118,11 @@ const (
 
 // Ret describes a query's result shape. Type holds the scalar Go type or
 // the struct name; Fields holds the columns in scan order (and, for RetRow,
-// the struct definition).
+// the struct definition). Helper is the array adapter of a scalar result.
 type Ret struct {
 	Kind   RetKind
 	Type   string
+	Helper string
 	Fields []Field
 }
 
@@ -118,8 +154,18 @@ func Render(in Input) ([]OutFile, error) {
 			return nil, err
 		}
 	}
+	if len(in.ArrayHelpers) > 0 {
+		if err := add("pgarray.go", emitArrays(in)); err != nil {
+			return nil, err
+		}
+	}
+	if in.EmitInterface {
+		if err := add("querier.go", emitQuerier(in)); err != nil {
+			return nil, err
+		}
+	}
 	for _, f := range in.Files {
-		if err := add(f.Out, emitFile(in.Package, f)); err != nil {
+		if err := add(f.Out, emitFile(in, f)); err != nil {
 			return nil, err
 		}
 	}
@@ -166,7 +212,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return b.String()
 }
 
-// emitModels renders one struct per table.
+// emitModels renders one struct per table, preceded by the enum types.
 func emitModels(in Input) string {
 	var types []string
 	for _, m := range in.Models {
@@ -178,7 +224,7 @@ func emitModels(in Input) string {
 	var b strings.Builder
 	b.WriteString(header)
 	fmt.Fprintf(&b, "\npackage %s\n", in.Package)
-	b.WriteString(emitImports(nil, types))
+	b.WriteString(emitImports(in, nil, types))
 
 	for _, e := range in.Enums {
 		fmt.Fprintf(&b, "\n// %s mirrors the PostgreSQL enum %s.\n", e.Name, e.DBName)
@@ -193,50 +239,68 @@ func emitModels(in Input) string {
 	for _, m := range in.Models {
 		fmt.Fprintf(&b, "\n// %s mirrors one row of the %s table.\n", m.Name, m.Table)
 		fmt.Fprintf(&b, "type %s struct {\n", m.Name)
-		for _, f := range m.Fields {
-			fmt.Fprintf(&b, "\t%s %s\n", CamelCase(f.Name), f.Type)
-		}
+		emitStructFields(&b, in, m.Fields)
 		b.WriteString("}\n")
 	}
 	return b.String()
 }
 
+// emitStructFields renders struct fields, with json tags when configured.
+func emitStructFields(b *strings.Builder, in Input, fields []Field) {
+	for _, f := range fields {
+		if in.JSONTags {
+			fmt.Fprintf(b, "\t%s %s `json:%q`\n", f.goName(), f.Type, f.Name)
+			continue
+		}
+		fmt.Fprintf(b, "\t%s %s\n", f.goName(), f.Type)
+	}
+}
+
 // emitFile renders the queries of one source file.
-func emitFile(pkg string, f SrcFile) string {
+func emitFile(in Input, f SrcFile) string {
 	base := []string{"context"}
 	var types []string
 	for _, q := range f.Queries {
 		if q.Command == "iter" {
 			base = append(base, "iter")
 		}
-		for _, p := range q.Params {
-			types = append(types, p.Type)
-		}
-		if q.Ret.Kind == RetScalar {
-			types = append(types, q.Ret.Type)
-		}
-		if q.Ret.Kind == RetRow {
-			for _, fl := range q.Ret.Fields {
-				types = append(types, fl.Type)
-			}
-		}
+		types = append(types, queryTypes(q)...)
 	}
 
 	var b strings.Builder
 	b.WriteString(header)
 	fmt.Fprintf(&b, "// Source: %s\n", f.Source)
-	fmt.Fprintf(&b, "\npackage %s\n", pkg)
-	b.WriteString(emitImports(base, types))
+	fmt.Fprintf(&b, "\npackage %s\n", in.Package)
+	b.WriteString(emitImports(in, base, types))
 
 	for _, q := range f.Queries {
-		emitQuery(&b, q)
+		emitQuery(&b, in, q)
 	}
 	return b.String()
 }
 
-// emitImports renders the import block for the base imports plus whatever
-// the given type expressions require.
-func emitImports(base []string, types []string) string {
+// queryTypes lists the type expressions a query's signature and row struct
+// mention, for import resolution.
+func queryTypes(q Query) []string {
+	var types []string
+	for _, p := range q.Params {
+		types = append(types, p.Type)
+	}
+	if q.Ret.Kind == RetScalar {
+		types = append(types, q.Ret.Type)
+	}
+	if q.Ret.Kind == RetRow {
+		for _, fl := range q.Ret.Fields {
+			types = append(types, fl.Type)
+		}
+	}
+	return types
+}
+
+// emitImports renders the import block: the base imports plus whatever the
+// type expressions require, standard library first, other modules after a
+// blank line.
+func emitImports(in Input, base []string, types []string) string {
 	need := map[string]bool{}
 	for _, imp := range base {
 		need[imp] = true
@@ -251,31 +315,52 @@ func emitImports(base []string, types []string) string {
 		if strings.Contains(t, "sql.") {
 			need["database/sql"] = true
 		}
+		if imp := in.TypeImports[t]; imp != "" {
+			need[imp] = true
+		}
 	}
 	if len(need) == 0 {
 		return ""
 	}
 
-	imports := make([]string, 0, len(need))
+	var std, ext []string
 	for imp := range need {
-		imports = append(imports, imp)
+		if external(imp) {
+			ext = append(ext, imp)
+		} else {
+			std = append(std, imp)
+		}
 	}
-	sort.Strings(imports)
+	sort.Strings(std)
+	sort.Strings(ext)
 
-	if len(imports) == 1 {
-		return fmt.Sprintf("\nimport %q\n", imports[0])
+	if len(std)+len(ext) == 1 {
+		return fmt.Sprintf("\nimport %q\n", append(std, ext...)[0])
 	}
 	var b strings.Builder
 	b.WriteString("\nimport (\n")
-	for _, imp := range imports {
+	for _, imp := range std {
+		fmt.Fprintf(&b, "\t%q\n", imp)
+	}
+	if len(std) > 0 && len(ext) > 0 {
+		b.WriteString("\n")
+	}
+	for _, imp := range ext {
 		fmt.Fprintf(&b, "\t%q\n", imp)
 	}
 	b.WriteString(")\n")
 	return b.String()
 }
 
+// external reports whether an import path names a module outside the
+// standard library.
+func external(imp string) bool {
+	first, _, _ := strings.Cut(imp, "/")
+	return strings.Contains(first, ".")
+}
+
 // emitQuery renders one const + optional structs + the method.
-func emitQuery(b *strings.Builder, q Query) {
+func emitQuery(b *strings.Builder, in Input, q Query) {
 	constName := lowerFirst(q.Name)
 	fmt.Fprintf(b, "\nconst %s = %s\n", constName, backquote(q.SQL))
 
@@ -293,9 +378,7 @@ func emitQuery(b *strings.Builder, q Query) {
 	if q.Ret.Kind == RetRow {
 		fmt.Fprintf(b, "\n// %s is the result row of %s.\n", q.Ret.Type, q.Name)
 		fmt.Fprintf(b, "type %s struct {\n", q.Ret.Type)
-		for _, f := range q.Ret.Fields {
-			fmt.Fprintf(b, "\t%s %s\n", CamelCase(f.Name), f.Type)
-		}
+		emitStructFields(b, in, q.Ret.Fields)
 		b.WriteString("}\n")
 	}
 
@@ -312,15 +395,23 @@ func emitQuery(b *strings.Builder, q Query) {
 		taken[paramName(p.Name)] = true
 	}
 
-	// The argument list of the call site.
-	callArgs := strings.Join(argNames, ", ")
-	if useParamsStruct {
-		var parts []string
-		for _, p := range q.Params {
-			parts = append(parts, "arg."+CamelCase(p.Name))
+	// The argument list of the call site; array parameters ride their
+	// adapter type so the driver sees a Valuer.
+	wrap := func(expr string, p Param) string {
+		if p.Helper != "" {
+			return p.Helper + "(" + expr + ")"
 		}
-		callArgs = strings.Join(parts, ", ")
+		return expr
 	}
+	var parts []string
+	for i, p := range q.Params {
+		if useParamsStruct {
+			parts = append(parts, wrap("arg."+CamelCase(p.Name), p))
+			continue
+		}
+		parts = append(parts, wrap(argNames[i], p))
+	}
+	callArgs := strings.Join(parts, ", ")
 	if callArgs != "" {
 		callArgs = ", " + callArgs
 	}
@@ -412,15 +503,31 @@ func signatureParams(params []Param, names []string, useStruct bool, queryName s
 	return ", " + strings.Join(parts, ", ")
 }
 
-// scanArgs renders the Scan argument list for a result shape.
+// scanArgs renders the Scan argument list for a result shape. Array fields
+// scan through their adapter type; embedded structs expand one level.
 func scanArgs(varName string, ret Ret) string {
 	if ret.Kind == RetScalar {
+		if ret.Helper != "" {
+			return "(*" + ret.Helper + ")(&" + varName + ")"
+		}
 		return "&" + varName
 	}
 	var parts []string
-	for _, f := range ret.Fields {
-		parts = append(parts, "&"+varName+"."+CamelCase(f.Name))
+	var walk func(prefix string, fields []Field)
+	walk = func(prefix string, fields []Field) {
+		for _, f := range fields {
+			if f.Embed != nil {
+				walk(prefix+"."+f.goName(), f.Embed)
+				continue
+			}
+			target := "&" + prefix + "." + f.goName()
+			if f.Helper != "" {
+				target = "(*" + f.Helper + ")(" + target + ")"
+			}
+			parts = append(parts, target)
+		}
 	}
+	walk(varName, ret.Fields)
 	return strings.Join(parts, ", ")
 }
 

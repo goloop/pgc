@@ -27,6 +27,15 @@ type Query struct {
 
 	Overrides  []Override
 	ParamNames map[int]string // $N (1-based) to a name from -- param:
+	Embeds     []Embed        // "-- embed:" annotations, in order
+}
+
+// Embed asks for a table's full column run inside the result to be nested
+// as that table's model struct, from a "-- embed: <table> [as <Field>]"
+// annotation.
+type Embed struct {
+	Table string // table name, optionally schema-qualified
+	As    string // Go field name; empty means the model name
 }
 
 // Override adjusts the Go type or nullability of one result column or one
@@ -147,6 +156,12 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 					return nil, fmt.Errorf("%s:%d: %w", path, lineno, err)
 				}
 				cur.ParamNames[n] = name
+			case strings.HasPrefix(text, "embed:"):
+				e, err := parseEmbed(strings.TrimPrefix(text, "embed:"))
+				if err != nil {
+					return nil, fmt.Errorf("%s:%d: %w", path, lineno, err)
+				}
+				cur.Embeds = append(cur.Embeds, e)
 			default:
 				if text != "" {
 					if cur.Doc != "" {
@@ -205,6 +220,19 @@ func parseOverride(s string) (Override, error) {
 		return Override{}, fmt.Errorf("override %q changes nothing", s)
 	}
 	return o, nil
+}
+
+// parseEmbed decodes "<table> [as <Field>]".
+func parseEmbed(s string) (Embed, error) {
+	fields := strings.Fields(s)
+	switch {
+	case len(fields) == 1:
+		return Embed{Table: fields[0]}, nil
+	case len(fields) == 3 && fields[1] == "as" && exportedIdent(fields[2]):
+		return Embed{Table: fields[0], As: fields[2]}, nil
+	}
+	return Embed{}, fmt.Errorf(
+		"embed wants \"<table> [as <ExportedField>]\", got %q", s)
 }
 
 // parseParamName decodes "$N <name>".
