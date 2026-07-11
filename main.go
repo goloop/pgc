@@ -22,10 +22,11 @@ import (
 
 	"github.com/goloop/pgc/internal/compile"
 	"github.com/goloop/pgc/internal/config"
+	"github.com/goloop/pgc/internal/migrate"
 	"github.com/goloop/pgc/internal/pgwire"
 )
 
-const version = "0.2.1"
+const version = "0.3.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -44,6 +45,8 @@ func run(args []string) error {
 		return generateCmd(args[1:], true)
 	case "check":
 		return generateCmd(args[1:], false)
+	case "migrate":
+		return migrateCmd(args[1:])
 	case "describe":
 		return describeCmd(args[1:])
 	case "version":
@@ -64,6 +67,8 @@ func usage() {
 Usage:
   pgc generate [-c pgc.json] [-d url]  compile the queries into a Go package
   pgc check    [-c pgc.json] [-d url]  compile without writing, for CI
+  pgc migrate  [-c pgc.json] [-d url]  apply pending migrations, in order
+  pgc migrate status                   list applied and pending migrations
   pgc describe [-d url] "SELECT ..."   print parameter and column types
   pgc version                          print the version
 
@@ -120,6 +125,73 @@ func generateCmd(args []string, write bool) error {
 			return err
 		}
 		fmt.Println(path)
+	}
+	return nil
+}
+
+// migrateCmd applies pending migrations or reports their status.
+func migrateCmd(args []string) error {
+	status := false
+	if len(args) > 0 && args[0] == "status" {
+		status = true
+		args = args[1:]
+	}
+
+	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	cfgPath := fs.String("c", "pgc.json", "config file")
+	dsn := fs.String("d", "", "database url (default: $PGC_DATABASE_URL)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	explicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "c" {
+			explicit = true
+		}
+	})
+	cfg, err := config.Load(*cfgPath, explicit)
+	if err != nil {
+		return err
+	}
+
+	conn, err := dial(*dsn)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if status {
+		list, warnings, err := migrate.Status(conn, cfg.Migrations)
+		if err != nil {
+			return err
+		}
+		for _, m := range list {
+			if m.Applied {
+				fmt.Printf("applied  %-40s %s\n", m.Name, m.AppliedAt)
+				continue
+			}
+			fmt.Printf("pending  %s\n", m.Name)
+		}
+		for _, w := range warnings {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
+		return nil
+	}
+
+	res, err := migrate.Run(conn, cfg.Migrations)
+	if res != nil {
+		for _, name := range res.Applied {
+			fmt.Println("applied", name)
+		}
+		for _, w := range res.Warnings {
+			fmt.Fprintln(os.Stderr, "warning:", w)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if len(res.Applied) == 0 {
+		fmt.Println("nothing to apply")
 	}
 	return nil
 }

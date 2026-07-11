@@ -18,6 +18,10 @@ type Config struct {
 	// Queries is the directory holding the annotated .sql files.
 	Queries string `json:"queries"`
 
+	// Migrations is the directory holding the plain-SQL migration files
+	// that "pgc migrate" applies.
+	Migrations string `json:"migrations"`
+
 	// Out is the directory the generated package is written to.
 	Out string `json:"out"`
 
@@ -51,9 +55,10 @@ type Config struct {
 // defaults describe a conventional layout.
 func Load(path string, explicit bool) (Config, error) {
 	cfg := Config{
-		Queries:  "queries",
-		Out:      "internal/db",
-		Nullable: "pointer",
+		Queries:    "queries",
+		Migrations: "migrations",
+		Out:        "internal/db",
+		Nullable:   "pointer",
 	}
 
 	data, err := os.ReadFile(path)
