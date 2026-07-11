@@ -313,10 +313,13 @@ q.WithTx(tx).DeleteUser(..) // *sql.Tx теж задовольняє
 docker run -d --name ci-pg -e POSTGRES_PASSWORD=ci -p 5432:5432 postgres:17-alpine
 # тут застосувати міграції
 export PGC_DATABASE_URL="postgres://postgres:ci@localhost:5432/postgres?sslmode=disable"
+go install github.com/goloop/pgc@v0.2.0   # запінити інструмент (і Go в CI)
 pgc generate
 git diff --exit-code   # падає, коли закомічений код розійшовся
 ```
 
+Пінь у CI і версію pgc, і версію Go-тулчейну, і встановлюй один раз, а не
+`go run` на кожен крок - збірки лишаються відтворюваними та швидкими.
 `pgc check` робить ту саму компіляцію без запису, коли потрібна лише
 перевірка.
 

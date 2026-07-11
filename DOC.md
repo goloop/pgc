@@ -314,10 +314,13 @@ own implementation.
 docker run -d --name ci-pg -e POSTGRES_PASSWORD=ci -p 5432:5432 postgres:17-alpine
 # apply migrations here
 export PGC_DATABASE_URL="postgres://postgres:ci@localhost:5432/postgres?sslmode=disable"
+go install github.com/goloop/pgc@v0.2.0   # pin the tool (and pin Go in CI)
 pgc generate
 git diff --exit-code   # fails when the committed code drifted
 ```
 
+Pin both the pgc version and the Go toolchain version in CI, and install
+once rather than `go run` per step - builds stay reproducible and fast.
 `pgc check` does the same compilation without writing, when only validation
 is wanted.
 
