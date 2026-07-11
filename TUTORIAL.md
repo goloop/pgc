@@ -137,7 +137,9 @@ scheme       user    password   host        port     db      options
 ```
 
 `sslmode=disable` is right for a local container - there is no TLS to
-speak. For remote servers use `require` or `verify-full`.
+speak. For remote servers use `verify-full`, and when the provider hands
+out its own CA file, add `&sslrootcert=/path/to/ca.pem` - see
+[DOC.md](DOC.md#workflow) for the full TLS story.
 
 ## 5. Write and apply a migration
 

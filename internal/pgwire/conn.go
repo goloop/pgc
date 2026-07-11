@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
 	"slices"
 	"time"
 )
@@ -56,11 +58,12 @@ func Dial(ctx context.Context, cfg Config) (*Conn, error) {
 	}
 	raw.SetDeadline(deadline)
 
-	raw, err = negotiateTLS(raw, cfg)
+	secured, err := negotiateTLS(raw, cfg)
 	if err != nil {
 		raw.Close()
 		return nil, err
 	}
+	raw = secured
 
 	c := &Conn{
 		conn:      raw,
@@ -123,13 +126,9 @@ func negotiateTLS(raw net.Conn, cfg Config) (net.Conn, error) {
 
 	switch answer[0] {
 	case 'S':
-		tcfg := &tls.Config{}
-		if cfg.SSLMode == "verify-full" {
-			tcfg.ServerName = cfg.Host
-		} else {
-			// prefer/require encrypt without verifying the certificate,
-			// matching the usual expectations for those modes.
-			tcfg.InsecureSkipVerify = true
+		tcfg, err := buildTLSConfig(cfg)
+		if err != nil {
+			return nil, err
 		}
 		tconn := tls.Client(raw, tcfg)
 		if err := tconn.Handshake(); err != nil {
@@ -143,6 +142,81 @@ func negotiateTLS(raw net.Conn, cfg Config) (net.Conn, error) {
 		return nil, fmt.Errorf("pgwire: server refused TLS (sslmode=%s)", cfg.SSLMode)
 	default:
 		return nil, fmt.Errorf("pgwire: unexpected ssl answer %q", answer[0])
+	}
+}
+
+// buildTLSConfig translates the sslmode and sslrootcert settings into a
+// tls.Config:
+//
+//   - prefer/require encrypt without verifying the peer, unless a root
+//     certificate is given - then they behave like verify-ca, matching what
+//     users of the standard connection parameters expect;
+//   - verify-ca checks the certificate chain but not the host name;
+//   - verify-full checks both.
+//
+// A root certificate file replaces the system trust store - managed
+// databases sign their server certificates with their own authority and
+// hand out its PEM.
+func buildTLSConfig(cfg Config) (*tls.Config, error) {
+	mode := cfg.SSLMode
+	var roots *x509.CertPool
+	if cfg.SSLRootCert != "" {
+		pem, err := os.ReadFile(cfg.SSLRootCert)
+		if err != nil {
+			return nil, fmt.Errorf("pgwire: sslrootcert: %w", err)
+		}
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf(
+				"pgwire: sslrootcert: no certificates found in %s", cfg.SSLRootCert)
+		}
+		if mode == "prefer" || mode == "require" {
+			mode = "verify-ca"
+		}
+	}
+
+	switch mode {
+	case "verify-full":
+		return &tls.Config{ServerName: cfg.Host, RootCAs: roots}, nil
+	case "verify-ca":
+		// The chain is verified by hand because crypto/tls offers no
+		// hostname-free verification mode.
+		return &tls.Config{
+			InsecureSkipVerify:    true,
+			VerifyPeerCertificate: chainVerifier(roots),
+		}, nil
+	default: // prefer, require - encrypt only
+		return &tls.Config{InsecureSkipVerify: true}, nil
+	}
+}
+
+// chainVerifier checks the presented certificate chain against roots (or
+// the system pool when roots is nil), ignoring the host name - the
+// verify-ca contract.
+func chainVerifier(roots *x509.CertPool) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return fmt.Errorf("pgwire: server presented no certificate")
+		}
+		certs := make([]*x509.Certificate, 0, len(rawCerts))
+		for _, raw := range rawCerts {
+			cert, err := x509.ParseCertificate(raw)
+			if err != nil {
+				return fmt.Errorf("pgwire: server certificate: %w", err)
+			}
+			certs = append(certs, cert)
+		}
+		opts := x509.VerifyOptions{
+			Roots:         roots,
+			Intermediates: x509.NewCertPool(),
+		}
+		for _, cert := range certs[1:] {
+			opts.Intermediates.AddCert(cert)
+		}
+		if _, err := certs[0].Verify(opts); err != nil {
+			return fmt.Errorf("pgwire: verify-ca: %w", err)
+		}
+		return nil
 	}
 }
 

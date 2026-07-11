@@ -61,8 +61,19 @@ URL з'єднання береться з `PGC_DATABASE_URL` (або `DATABASE_U
 postgres://user:password@host:5432/dbname?sslmode=disable
 ```
 
-`sslmode` приймає `disable`, `prefer` (за замовчуванням), `require` і
-`verify-full`.
+`sslmode` приймає `disable`, `prefer` (за замовчуванням), `require`,
+`verify-ca` і `verify-full`. Продакшен-база зазвичай підписує серверний
+сертифікат власним центром сертифікації і видає файл CA; вкажи його в
+`sslrootcert` - і ланцюг перевірятиметься проти цього центру, а не
+системних коренів:
+
+```
+postgres://app:...@db.example.com:5432/app?sslmode=verify-full&sslrootcert=/etc/ssl/db-ca.pem
+```
+
+`verify-full` перевіряє ланцюг сертифіката й ім'я хоста; `verify-ca` -
+лише ланцюг. `require` з заданим `sslrootcert` підвищується до
+`verify-ca`, як і в стандартних параметрах підключення.
 
 ## Міграції
 

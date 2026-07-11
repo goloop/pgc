@@ -60,8 +60,20 @@ repository:
 postgres://user:password@host:5432/dbname?sslmode=disable
 ```
 
-`sslmode` accepts `disable`, `prefer` (default), `require` and
-`verify-full`.
+`sslmode` accepts `disable`, `prefer` (default), `require`, `verify-ca`
+and `verify-full`. A production database usually signs its server
+certificate with its own authority and hands out the CA file; point
+`sslrootcert` at it and the chain is verified against that authority
+instead of the system roots:
+
+```
+postgres://app:...@db.example.com:5432/app?sslmode=verify-full&sslrootcert=/etc/ssl/db-ca.pem
+```
+
+`verify-full` checks the certificate chain and the host name;
+`verify-ca` checks only the chain. `require` with an `sslrootcert` is
+promoted to `verify-ca`, matching the standard connection-parameter
+behavior.
 
 ## Migrations
 

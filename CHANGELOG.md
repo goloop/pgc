@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-11
+
+### Added
+- `sslrootcert` in the connection URL: verify the server's certificate
+  chain against a provider-issued CA file instead of the system roots -
+  the usual arrangement for managed production databases. New `verify-ca`
+  mode checks the chain without the host name; `require` with an
+  `sslrootcert` is promoted to `verify-ca`, matching the standard
+  connection-parameter behavior.
+
+### Fixed
+- A TLS negotiation failure now surfaces as a clean error instead of a
+  panic.
+
 ## [0.4.1] - 2026-07-11
 
 ### Fixed

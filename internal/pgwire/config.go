@@ -15,7 +15,15 @@ type Config struct {
 	User     string
 	Password string
 	Database string // defaults to the user name, like the server does
-	SSLMode  string // disable, prefer (default), require or verify-full
+
+	// SSLMode is disable, prefer (default), require, verify-ca or
+	// verify-full.
+	SSLMode string
+
+	// SSLRootCert is a path to a PEM file with the certificate authority
+	// to trust instead of the system roots - the usual arrangement for
+	// managed databases, which hand out their own CA file.
+	SSLRootCert string
 }
 
 // ParseURL parses a postgres:// (or postgresql://) connection URL of the
@@ -59,12 +67,13 @@ func ParseURL(dsn string) (Config, error) {
 	}
 	if m := u.Query().Get("sslmode"); m != "" {
 		switch m {
-		case "disable", "prefer", "require", "verify-full":
+		case "disable", "prefer", "require", "verify-ca", "verify-full":
 			cfg.SSLMode = m
 		default:
 			return Config{}, fmt.Errorf("pgwire: unsupported sslmode %q", m)
 		}
 	}
+	cfg.SSLRootCert = u.Query().Get("sslrootcert")
 	if cfg.User == "" {
 		return Config{}, fmt.Errorf("pgwire: user is required in the url")
 	}

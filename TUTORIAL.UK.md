@@ -137,7 +137,9 @@ postgres://  app  :  secret  @  127.0.0.1 : 5433  /  app  ?sslmode=disable
 ```
 
 `sslmode=disable` правильний для локального контейнера - там нема TLS.
-Для віддалених серверів бери `require` або `verify-full`.
+Для віддалених серверів бери `verify-full`, а коли провайдер видає власний
+CA-файл - додай `&sslrootcert=/path/to/ca.pem`; повна TLS-історія в
+[DOC.UK.md](DOC.UK.md#робочий-процес).
 
 ## 5. Написати й застосувати міграцію
 
