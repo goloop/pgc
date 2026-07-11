@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-07-11
+
+### Added
+- A step-by-step tutorial (`TUTORIAL.md`, Ukrainian `TUTORIAL.UK.md`):
+  Docker database with compose, migrations, the full annotation language,
+  generation, usage, the change loop, CI and troubleshooting - every
+  command verified end to end on a clean machine.
+
+### Fixed
+- `$1 = ANY(col)` and `$1 = ALL(col)` now name the parameter after the
+  column; `ANY`/`ALL`/`SOME`/`EXISTS`/`DISTINCT` can no longer be picked
+  up as parameter names.
+
 ## [0.2.0] - 2026-07-11
 
 ### Added

@@ -4,6 +4,7 @@ The full reference for `pgc`: the workflow, the query file annotations, the
 configuration, the type mapping and the anatomy of the generated code.
 
 Ukrainian version: **[DOC.UK.md](DOC.UK.md)**.
+First time here? Start with the step-by-step **[TUTORIAL.md](TUTORIAL.md)**.
 
 ## Contents
 

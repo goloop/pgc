@@ -89,6 +89,11 @@ match the schema and generated code that drifted from its sources.
 
 ## Documentation
 
+New to pgc? The step-by-step **[TUTORIAL.md](TUTORIAL.md)** (Ukrainian:
+**[TUTORIAL.UK.md](TUTORIAL.UK.md)**) takes you from an empty directory to
+a running program in about twenty minutes - Docker database, migrations,
+annotations, generation and usage, all copy-pasteable.
+
 Full reference: **[DOC.md](DOC.md)** (Ukrainian: **[DOC.UK.md](DOC.UK.md)**) -
 annotations, configuration, the type mapping, nullability rules and the
 anatomy of the generated code.
