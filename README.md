@@ -18,8 +18,12 @@ speaks the PostgreSQL wire protocol directly.
 go install github.com/goloop/pgc@latest
 ```
 
-Requires Go 1.24 or newer, and a PostgreSQL database to generate against
-(a disposable local container is perfect).
+Building from source requires Go 1.24 or newer. Prebuilt binaries for
+Linux, macOS and Windows are attached to the
+[releases](https://github.com/goloop/pgc/releases), with checksums.
+
+Either way, generation needs a PostgreSQL database to ask (a disposable
+local container is perfect).
 
 ## Quick start
 

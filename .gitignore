@@ -1,0 +1,4 @@
+# Build artifacts.
+/pgc
+/pgc.exe
+/dist/
