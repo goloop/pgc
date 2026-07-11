@@ -26,7 +26,7 @@ import (
 	"github.com/goloop/pgc/internal/pgwire"
 )
 
-const version = "0.3.1"
+const version = "0.4.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

@@ -365,9 +365,9 @@ type NotesWithAuthorRow struct {
 ```
 
 The annotation matches the first contiguous run of result columns that is
-exactly the table's full column list, in order - select the table's columns
-together (`a.*` does that). Repeat the annotation to embed several tables;
-use `as` to name the field, mandatory when embedding the same table twice.
+exactly the table's full column set - side by side, in any order (`a.*`
+always qualifies). Repeat the annotation to embed several tables; use `as`
+to name the field, mandatory when embedding the same table twice.
 
 ## 9. Configure generation: pgc.json
 

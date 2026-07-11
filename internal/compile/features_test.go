@@ -215,6 +215,84 @@ func TestEmbed(t *testing.T) {
 	}
 }
 
+// After ALTER TABLE ADD COLUMN the attnum order differs from what a human
+// writes: a full-set SELECT in any order must still reuse the model, with
+// Scan following the SELECT order.
+func TestPermutedModelReuse(t *testing.T) {
+	sql := "SELECT tags, id, email FROM users"
+	dir := writeQueries(t, "-- name: Everything :many\n"+sql+";\n")
+
+	db := &featuresDB{statements: map[string]*pgwire.Statement{
+		sql: {Columns: []pgwire.Column{
+			col(100, 3, "tags", 1007), col(100, 1, "id", 20), col(100, 2, "email", 400),
+		}},
+	}}
+	res, err := Run(db, testConfig(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var users string
+	for _, f := range res.Files {
+		if f.Name == "users.sql.go" {
+			users = string(f.Data)
+		}
+	}
+	for _, want := range []string{
+		"func (q *Queries) Everything(ctx context.Context) ([]User, error) {",
+		// Scan order follows the SELECT, not the struct.
+		"rows.Scan((*int32Array)(&u.Tags), &u.ID, &u.Email)",
+	} {
+		if !strings.Contains(users, want) {
+			t.Errorf("missing %q:\n%s", want, users)
+		}
+	}
+}
+
+// An embedded run matches as a set too, in any order.
+func TestPermutedEmbed(t *testing.T) {
+	sql := "SELECT o.id, o.user_id, u.email, u.id, u.tags " +
+		"FROM orders o JOIN users u ON u.id = o.user_id"
+	dir := writeQueries(t, "-- name: WithBuyer :many\n-- embed: public.users as Buyer\n"+sql+";\n")
+
+	db := &featuresDB{statements: map[string]*pgwire.Statement{
+		sql: {Columns: []pgwire.Column{
+			col(200, 1, "id", 20), col(200, 2, "user_id", 20),
+			col(100, 2, "email", 400), col(100, 1, "id", 20), col(100, 3, "tags", 1007),
+		}},
+	}}
+	res, err := Run(db, testConfig(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var users string
+	for _, f := range res.Files {
+		if f.Name == "users.sql.go" {
+			users = string(f.Data)
+		}
+	}
+	want := "rows.Scan(&r.ID, &r.UserID, &r.Buyer.Email, &r.Buyer.ID, (*int32Array)(&r.Buyer.Tags))"
+	if !strings.Contains(users, want) {
+		t.Errorf("missing %q:\n%s", want, users)
+	}
+}
+
+// A repeated physical column is not a permutation: it must fall through to
+// the duplicate-field error, not silently match.
+func TestRepeatedColumnIsNotAPermutation(t *testing.T) {
+	sql := "SELECT id, id, email FROM users"
+	dir := writeQueries(t, "-- name: Doubled :many\n"+sql+";\n")
+
+	db := &featuresDB{statements: map[string]*pgwire.Statement{
+		sql: {Columns: []pgwire.Column{
+			col(100, 1, "id", 20), col(100, 1, "id", 20), col(100, 2, "email", 400),
+		}},
+	}}
+	if _, err := Run(db, testConfig(dir)); err == nil ||
+		!strings.Contains(err.Error(), "duplicate result field") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestEmbedNoRun(t *testing.T) {
 	sql := "SELECT o.id, u.email FROM orders o JOIN users u ON true"
 	dir := writeQueries(t, "-- name: Partial :many\n-- embed: public.users\n"+sql+";\n")
@@ -225,7 +303,7 @@ func TestEmbedNoRun(t *testing.T) {
 		}},
 	}}
 	if _, err := Run(db, testConfig(dir)); err == nil ||
-		!strings.Contains(err.Error(), "full column list") {
+		!strings.Contains(err.Error(), "full column set") {
 		t.Fatalf("want embed-run error, got %v", err)
 	}
 }

@@ -280,6 +280,16 @@ const (
 )
 ```
 
+Each enum also gets three companions, so application-side validation can
+never go stale when `ALTER TYPE ... ADD VALUE` lands and the code is
+regenerated:
+
+```go
+ok := status.Valid()                       // is it one of the values?
+all := OrderStatusValues()                 // every value, declaration order
+st, ok := ParseOrderStatus("paid")         // string to enum, checked
+```
+
 Map the enum in `types` (for example to plain `string`) to opt out.
 
 ## Arrays
@@ -318,8 +328,8 @@ type OrdersWithBuyerRow struct {
 ```
 
 `-- embed: <table> [as <Field>]` matches the first contiguous run of result
-columns that is exactly the table's full column list, in order - select the
-table's columns together (`u.*` does) for it to apply. Repeat the annotation
+columns that is exactly the table's full column set - side by side, in any
+order (`u.*` always qualifies). Repeat the annotation
 to embed several tables; give fields explicit names with `as` when embedding
 the same table twice. A bare table name that exists in more than one schema
 must be qualified (`public.users`). An annotation that matches nothing is an
@@ -339,7 +349,8 @@ q.WithTx(tx).DeleteUser(..) // *sql.Tx satisfies it too
 `models.go` holds one struct per table that a query selects in full, typed
 from the catalog. Result shapes follow three rules:
 
-- the full column set of a table returns the model struct (`User`);
+- the full column set of a table, in any order, returns the model struct
+  (`User`);
 - a projection returns a per-query struct (`SearchOrdersRow`);
 - a single column returns a bare value (`count(*)` gives `(int64, error)`).
 

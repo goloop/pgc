@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-11
+
+### Added
+- Every enum gets three companions - `Valid()`, `<Enum>Values()` and
+  `Parse<Enum>(string)` - so application-side validation regenerates
+  together with the schema and can never go stale after
+  `ALTER TYPE ... ADD VALUE`.
+
+### Changed
+- Model reuse and `-- embed:` now match the table's full column **set** in
+  any order, not only in physical attnum order. After
+  `ALTER TABLE ADD COLUMN` the attnum order stops matching what a human
+  writes; Scan arguments follow the SELECT order, mapped onto the right
+  struct fields, so correctness is unchanged. The embed mismatch error now
+  explains the rule instead of surfacing as a duplicate-field complaint.
+
 ## [0.3.1] - 2026-07-11
 
 ### Fixed

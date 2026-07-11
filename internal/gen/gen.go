@@ -234,6 +234,28 @@ func emitModels(in Input) string {
 			fmt.Fprintf(&b, "\t%s %s = %q\n", v.Name, e.Name, v.Value)
 		}
 		b.WriteString(")\n")
+
+		recv := strings.ToLower(e.Name[:1])
+		var consts []string
+		for _, v := range e.Values {
+			consts = append(consts, v.Name)
+		}
+
+		fmt.Fprintf(&b, "\n// Valid reports whether %s is one of the %s values.\n",
+			recv, e.DBName)
+		fmt.Fprintf(&b, "func (%s %s) Valid() bool {\n\tswitch %s {\n\tcase %s:\n"+
+			"\t\treturn true\n\t}\n\treturn false\n}\n",
+			recv, e.Name, recv, strings.Join(consts, ", "))
+
+		fmt.Fprintf(&b, "\n// %sValues lists the %s values, in declaration order. "+
+			"The slice is\n// a fresh copy on every call.\n", e.Name, e.DBName)
+		fmt.Fprintf(&b, "func %sValues() []%s {\n\treturn []%s{%s}\n}\n",
+			e.Name, e.Name, e.Name, strings.Join(consts, ", "))
+
+		fmt.Fprintf(&b, "\n// Parse%s converts s into a %s, reporting whether s "+
+			"is one of the\n// %s values.\n", e.Name, e.Name, e.DBName)
+		fmt.Fprintf(&b, "func Parse%s(s string) (%s, bool) {\n\tv := %s(s)\n"+
+			"\treturn v, v.Valid()\n}\n", e.Name, e.Name, e.Name)
 	}
 
 	for _, m := range in.Models {

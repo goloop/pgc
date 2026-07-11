@@ -96,7 +96,29 @@ type OrderStatus string
 const (
 	OrderStatusPending OrderStatus = "pending"
 	OrderStatusPaid    OrderStatus = "paid"
-)`
+)
+
+// Valid reports whether o is one of the order_status values.
+func (o OrderStatus) Valid() bool {
+	switch o {
+	case OrderStatusPending, OrderStatusPaid:
+		return true
+	}
+	return false
+}
+
+// OrderStatusValues lists the order_status values, in declaration order. The slice is
+// a fresh copy on every call.
+func OrderStatusValues() []OrderStatus {
+	return []OrderStatus{OrderStatusPending, OrderStatusPaid}
+}
+
+// ParseOrderStatus converts s into a OrderStatus, reporting whether s is one of the
+// order_status values.
+func ParseOrderStatus(s string) (OrderStatus, bool) {
+	v := OrderStatus(s)
+	return v, v.Valid()
+}`
 	if !strings.Contains(models, want) {
 		t.Errorf("enum emission mismatch:\n%s", models)
 	}

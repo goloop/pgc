@@ -154,6 +154,13 @@ func checkNameCollisions(in gen.Input) error {
 		if err := claim(e.Name, "the enum "+e.DBName); err != nil {
 			return err
 		}
+		// The enum's companions are package-level names too.
+		if err := claim(e.Name+"Values", "the values list of enum "+e.DBName); err != nil {
+			return err
+		}
+		if err := claim("Parse"+e.Name, "the parser of enum "+e.DBName); err != nil {
+			return err
+		}
 	}
 	for _, f := range in.Files {
 		for _, q := range f.Queries {
@@ -265,12 +272,12 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 	}
 
 	if len(q.Embeds) == 0 {
-		if table, ok := c.fullTableMatch(cols); ok {
-			model, err := c.modelFor(table)
+		if table, ok := c.sameTable(cols); ok && isPermutation(cols, table) {
+			model, fields, err := c.selectOrderedFields(cols, table)
 			if err != nil {
 				return gen.Ret{}, err
 			}
-			return gen.Ret{Kind: gen.RetModel, Type: model.Name, Fields: model.Fields}, nil
+			return gen.Ret{Kind: gen.RetModel, Type: model.Name, Fields: fields}, nil
 		}
 	}
 
@@ -293,8 +300,8 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 			if err != nil {
 				return gen.Ret{}, err
 			}
-			if matchRun(cols[i:], table) {
-				model, err := c.modelFor(table)
+			if n := len(table.Columns); i+n <= len(cols) && isPermutation(cols[i:i+n], table) {
+				model, children, err := c.selectOrderedFields(cols[i:i+n], table)
 				if err != nil {
 					return gen.Ret{}, err
 				}
@@ -309,9 +316,9 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 					Name:   table.Name,
 					GoName: goName,
 					Type:   model.Name,
-					Embed:  model.Fields,
+					Embed:  children,
 				})
-				i += len(table.Columns)
+				i += n
 				embeds = embeds[1:]
 				continue
 			}
@@ -334,9 +341,9 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 	}
 	if len(embeds) > 0 {
 		return gen.Ret{}, fmt.Errorf(
-			"embed %s: the result has no remaining run of that table's full "+
-				"column list; select the table's columns contiguously and in "+
-				"order", embeds[0].Table)
+			"embed %s: the result has no contiguous run of that table's "+
+				"full column set (all columns, side by side, any order); "+
+				"selecting them with .* always works", embeds[0].Table)
 	}
 	return gen.Ret{Kind: gen.RetRow, Type: q.Name + "Row", Fields: fields}, nil
 }
@@ -360,40 +367,62 @@ func (c *compiler) tableByName(name string) (*catalog.Table, error) {
 	return found, nil
 }
 
-// matchRun reports whether cols starts with exactly table's full column
-// list, in attnum order.
-func matchRun(cols []pgwire.Column, table *catalog.Table) bool {
-	if len(cols) < len(table.Columns) {
-		return false
-	}
-	for i, tc := range table.Columns {
-		col := cols[i]
-		if col.TableOID != table.OID || col.Attnum != tc.Attnum || col.Name != tc.Name {
-			return false
-		}
-	}
-	return true
-}
-
-// fullTableMatch reports whether the columns are exactly one table's columns
-// in attnum order - the case where the model struct is reused instead of a
-// row struct.
-func (c *compiler) fullTableMatch(cols []pgwire.Column) (*catalog.Table, bool) {
+// sameTable returns the loaded table when every column originates from the
+// same one.
+func (c *compiler) sameTable(cols []pgwire.Column) (*catalog.Table, bool) {
 	first := cols[0].TableOID
 	if first == 0 {
 		return nil, false
 	}
-	table, ok := c.cat.Table(first)
-	if !ok || len(cols) != len(table.Columns) {
-		return nil, false
-	}
-	for i, col := range cols {
-		tc := table.Columns[i]
-		if col.TableOID != first || col.Attnum != tc.Attnum || col.Name != tc.Name {
+	for _, col := range cols {
+		if col.TableOID != first {
 			return nil, false
 		}
 	}
-	return table, true
+	return c.cat.Table(first)
+}
+
+// isPermutation reports whether cols is exactly table's full column set -
+// every column present once, in any order. Column order in a SELECT is
+// irrelevant on purpose: after ALTER TABLE ADD COLUMN the physical attnum
+// order no longer matches what a human writes.
+func isPermutation(cols []pgwire.Column, table *catalog.Table) bool {
+	if len(cols) != len(table.Columns) {
+		return false
+	}
+	byAttnum := make(map[int16]string, len(table.Columns))
+	for _, tc := range table.Columns {
+		byAttnum[tc.Attnum] = tc.Name
+	}
+	for _, col := range cols {
+		name, ok := byAttnum[col.Attnum]
+		if col.TableOID != table.OID || !ok || name != col.Name {
+			return false
+		}
+		delete(byAttnum, col.Attnum)
+	}
+	return true
+}
+
+// selectOrderedFields builds the scan fields for a full-table match in the
+// SELECT's own order, each mapped onto the model's field of the same column.
+func (c *compiler) selectOrderedFields(
+	cols []pgwire.Column,
+	table *catalog.Table,
+) (gen.Model, []gen.Field, error) {
+	model, err := c.modelFor(table)
+	if err != nil {
+		return gen.Model{}, nil, err
+	}
+	byName := make(map[string]gen.Field, len(model.Fields))
+	for _, f := range model.Fields {
+		byName[f.Name] = f
+	}
+	fields := make([]gen.Field, 0, len(cols))
+	for _, col := range cols {
+		fields = append(fields, byName[col.Name])
+	}
+	return model, fields, nil
 }
 
 // modelFor returns (building on first use) the model struct of a table.
