@@ -82,6 +82,17 @@ func (f Field) goName() string {
 	return CamelCase(f.Name)
 }
 
+// jsonTag returns the json tag for the field. A column keeps its source name;
+// an embedded struct is synthetic (it has no column), so its tag follows the
+// Go field name - the `as` alias when one is given - instead of the source
+// table name.
+func (f Field) jsonTag() string {
+	if f.Embed != nil {
+		return snakeCase(f.goName())
+	}
+	return f.Name
+}
+
 // SrcFile is the queries of one source .sql file.
 type SrcFile struct {
 	Source  string // header path, e.g. queries/users.sql
@@ -271,7 +282,7 @@ func emitModels(in Input) string {
 func emitStructFields(b *strings.Builder, in Input, fields []Field) {
 	for _, f := range fields {
 		if in.JSONTags {
-			fmt.Fprintf(b, "\t%s %s `json:%q`\n", f.goName(), f.Type, f.Name)
+			fmt.Fprintf(b, "\t%s %s `json:%q`\n", f.goName(), f.Type, f.jsonTag())
 			continue
 		}
 		fmt.Fprintf(b, "\t%s %s\n", f.goName(), f.Type)

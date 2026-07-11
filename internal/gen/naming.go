@@ -27,6 +27,33 @@ func CamelCase(s string) string {
 	return b.String()
 }
 
+// snakeCase converts an exported Go identifier back to snake_case:
+// RefreshRecord becomes refresh_record, Author becomes author. It is used for
+// json tags on synthetic fields (embeds) that have no source column name, so
+// the tag follows the Go field (its `as` alias) rather than the source table.
+func snakeCase(s string) string {
+	runes := []rune(s)
+	var b strings.Builder
+	for i, r := range runes {
+		if r >= 'A' && r <= 'Z' {
+			// A word boundary opens when the previous rune was lower/digit, or
+			// when this upper rune ends an acronym run (the next rune is lower).
+			if i > 0 {
+				prev := runes[i-1]
+				prevLowerOrDigit := (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9')
+				nextLower := i+1 < len(runes) && runes[i+1] >= 'a' && runes[i+1] <= 'z'
+				if prevLowerOrDigit || nextLower {
+					b.WriteByte('_')
+				}
+			}
+			b.WriteRune(r - 'A' + 'a')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // lowerCamel converts a snake_case name to an unexported identifier:
 // user_id becomes userID, id stays id.
 func lowerCamel(s string) string {

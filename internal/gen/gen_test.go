@@ -152,3 +152,61 @@ func TestRowStructAndParamsStruct(t *testing.T) {
 		}
 	}
 }
+
+func TestSnakeCase(t *testing.T) {
+	cases := map[string]string{
+		"Author":        "author",
+		"Post":          "post",
+		"RefreshRecord": "refresh_record",
+		"User":          "user",
+		"HTTPServer":    "http_server",
+	}
+	for in, want := range cases {
+		if got := snakeCase(in); got != want {
+			t.Errorf("snakeCase(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestEmbedJSONTagFollowsField checks that an embedded struct's json tag comes
+// from the Go field (its `as` alias), not the source table name.
+func TestEmbedJSONTagFollowsField(t *testing.T) {
+	in := Input{
+		Package:  "db",
+		JSONTags: true,
+		Models: []Model{
+			{Name: "User", Table: "users", Fields: []Field{
+				{Name: "id", Type: "int64"},
+				{Name: "email", Type: "string"},
+			}},
+		},
+		Files: []SrcFile{{
+			Source: "queries/orders.sql",
+			Out:    "orders.sql.go",
+			Queries: []Query{{
+				Name:    "OrderWithBuyer",
+				Doc:     "OrderWithBuyer runs the query.",
+				Command: "one",
+				SQL:     "SELECT o.id, u.id, u.email FROM orders o JOIN users u ON true",
+				Ret: Ret{Kind: RetRow, Type: "OrderWithBuyerRow", Fields: []Field{
+					{Name: "id", Type: "int64"},
+					{Name: "users", GoName: "Buyer", Type: "User", Embed: []Field{
+						{Name: "id", Type: "int64"},
+						{Name: "email", Type: "string"},
+					}},
+				}},
+			}},
+		}},
+	}
+	files, err := Render(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(files[len(files)-1].Data)
+	if !strings.Contains(src, "`json:\"buyer\"`") {
+		t.Errorf("embed tag should be json:\"buyer\", got:\n%s", src)
+	}
+	if strings.Contains(src, "`json:\"users\"`") {
+		t.Errorf("embed tag must not be the table name json:\"users\":\n%s", src)
+	}
+}
