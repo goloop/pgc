@@ -26,7 +26,7 @@ import (
 	"github.com/goloop/pgc/internal/pgwire"
 )
 
-const version = "0.4.0"
+const version = "0.4.1"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -159,6 +159,10 @@ func migrateCmd(args []string) error {
 		return err
 	}
 	defer conn.Close()
+
+	// A migration statement may legitimately run for a long time (index
+	// builds, backfills); wait for as long as the server needs.
+	conn.SetOpTimeout(0)
 
 	if status {
 		list, warnings, err := migrate.Status(conn, cfg.Migrations)

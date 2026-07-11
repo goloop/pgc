@@ -24,9 +24,20 @@ type Conn struct {
 	r    *bufio.Reader
 	w    *bufio.Writer
 
+	// opTimeout bounds one protocol round trip; 0 means no deadline.
+	// Describe and catalog work keep the default; migrations disable it,
+	// because DDL legitimately runs for as long as the server needs.
+	opTimeout time.Duration
+
 	// params holds the ParameterStatus values the server reported during
 	// startup (server_version, client_encoding and friends).
 	params map[string]string
+}
+
+// SetOpTimeout changes the per-operation deadline; 0 disables it entirely
+// (dead peers are still caught by TCP keepalives).
+func (c *Conn) SetOpTimeout(d time.Duration) {
+	c.opTimeout = d
 }
 
 // Dial connects, negotiates TLS according to cfg.SSLMode, authenticates and
@@ -52,10 +63,11 @@ func Dial(ctx context.Context, cfg Config) (*Conn, error) {
 	}
 
 	c := &Conn{
-		conn:   raw,
-		r:      bufio.NewReader(raw),
-		w:      bufio.NewWriter(raw),
-		params: map[string]string{},
+		conn:      raw,
+		r:         bufio.NewReader(raw),
+		w:         bufio.NewWriter(raw),
+		opTimeout: opTimeout,
+		params:    map[string]string{},
 	}
 	if err := c.startup(cfg); err != nil {
 		raw.Close()
@@ -78,9 +90,17 @@ func (c *Conn) Close() error {
 	return c.conn.Close()
 }
 
-// begin arms the per-operation deadline; done disarms it.
-func (c *Conn) begin() { c.conn.SetDeadline(time.Now().Add(opTimeout)) }
-func (c *Conn) done()  { c.conn.SetDeadline(time.Time{}) }
+// begin arms the per-operation deadline; done disarms it. A zero opTimeout
+// leaves the connection without a deadline.
+func (c *Conn) begin() {
+	if c.opTimeout <= 0 {
+		c.conn.SetDeadline(time.Time{})
+		return
+	}
+	c.conn.SetDeadline(time.Now().Add(c.opTimeout))
+}
+
+func (c *Conn) done() { c.conn.SetDeadline(time.Time{}) }
 
 // negotiateTLS performs the SSLRequest dance. With "disable" the connection
 // stays plain. Otherwise the server is asked; "prefer" falls back to plain
