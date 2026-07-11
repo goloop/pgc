@@ -18,7 +18,15 @@ func emitQuerier(in Input) string {
 			if q.Command == "iter" {
 				base = append(base, "iter")
 			}
-			types = append(types, queryTypes(q)...)
+			// Only what the signatures spell out matters here: parameter
+			// types and scalar results. Row and model structs appear by
+			// name alone - their field types must not drag imports in.
+			for _, p := range q.Params {
+				types = append(types, p.Type)
+			}
+			if q.Ret.Kind == RetScalar {
+				types = append(types, q.Ret.Type)
+			}
 		}
 	}
 	sort.Slice(queries, func(i, j int) bool {

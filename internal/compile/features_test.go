@@ -272,3 +272,36 @@ func TestJSONTagsAndQuerier(t *testing.T) {
 		}
 	}
 }
+
+// A querier must not import packages that only row struct fields use: the
+// interface mentions the structs by name alone.
+func TestQuerierImportsOnlySignatureTypes(t *testing.T) {
+	sql := "SELECT id, email FROM users ORDER BY id"
+	dir := writeQueries(t, "-- name: Pairs :many\n"+sql+";\n")
+
+	db := &featuresDB{statements: map[string]*pgwire.Statement{
+		sql: {Columns: []pgwire.Column{
+			// tags is _int4: the row struct field needs the array helper,
+			// but the querier signature only says PairsRow.
+			col(100, 1, "id", 20), col(100, 3, "tags", 1007),
+		}},
+	}}
+	cfg := testConfig(dir)
+	cfg.Interface = true
+	res, err := Run(db, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.Files {
+		if f.Name != "querier.go" {
+			continue
+		}
+		src := string(f.Data)
+		if strings.Contains(src, "\"time\"") || strings.Contains(src, "encoding/json") {
+			t.Errorf("querier.go pulls field-type imports:\n%s", src)
+		}
+		if !strings.Contains(src, `import "context"`) {
+			t.Errorf("querier.go must still import context:\n%s", src)
+		}
+	}
+}
