@@ -81,6 +81,14 @@ func neighborName(toks []token, i int) string {
 			return id.val
 		}
 	}
+	// $1 = ANY(column) / ALL(column).
+	if isCompare(at(toks, i+1)) &&
+		(at(toks, i+2).val == "any" || at(toks, i+2).val == "all") &&
+		at(toks, i+3).val == "(" {
+		if id := at(toks, i+4); id.kind == tokIdent && !isKeyword(id.val) {
+			return id.val
+		}
+	}
 	return ""
 }
 
@@ -206,7 +214,8 @@ func isKeyword(s string) bool {
 		"insert", "into", "values", "update", "set", "delete", "returning",
 		"order", "by", "group", "having", "limit", "offset", "join", "on",
 		"left", "right", "full", "inner", "outer", "as", "in", "between",
-		"true", "false", "case", "when", "then", "else", "end", "asc", "desc":
+		"true", "false", "case", "when", "then", "else", "end", "asc", "desc",
+		"any", "all", "some", "exists", "distinct":
 		return true
 	}
 	return false

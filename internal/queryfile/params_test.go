@@ -72,6 +72,19 @@ FROM t`, 1)
 	}
 }
 
+func TestInferAnyBothDirections(t *testing.T) {
+	names := infer(t,
+		`SELECT * FROM notes WHERE id = ANY($1) AND $2 = ANY(tags)`, 2)
+	if names[1] != "id" || names[2] != "tags" {
+		t.Errorf("names = %v", names)
+	}
+	// ANY/ALL themselves must never become a parameter name.
+	names = infer(t, `SELECT * FROM t WHERE $1 = ANY(SELECT x FROM u)`, 1)
+	if names[1] != "arg1" {
+		t.Errorf("names = %v", names)
+	}
+}
+
 func TestInferUpdateSet(t *testing.T) {
 	names := infer(t, `UPDATE users SET name = $2, email = $3 WHERE id = $1`, 3)
 	if names[1] != "id" || names[2] != "name" || names[3] != "email" {
