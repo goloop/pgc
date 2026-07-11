@@ -80,12 +80,18 @@ nested with `-- embed:`. Optional extras: `json:"column"` tags and a
 ```
 pgc generate [-c pgc.json] [-d url]  compile the queries into a Go package
 pgc check    [-c pgc.json] [-d url]  compile without writing, for CI
+pgc migrate  [-c pgc.json] [-d url]  apply pending migrations, in order
+pgc migrate status                   list applied and pending migrations
 pgc describe [-d url] "SELECT ..."   print parameter and column types
 pgc version                          print the version
 ```
 
-`pgc check` plus `git diff --exit-code` in CI catches queries that no longer
-match the schema and generated code that drifted from its sources.
+`pgc migrate` applies plain-SQL migration files exactly once each, in name
+order - one transaction per file, an advisory lock against concurrent runs
+and a bookkeeping table, so the whole database lifecycle lives in one tool:
+`pgc migrate`, `pgc generate`, `pgc check`. In CI, `pgc check` plus
+`git diff --exit-code` catches queries that no longer match the schema and
+generated code that drifted from its sources.
 
 ## Documentation
 

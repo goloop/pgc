@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-11
+
+### Added
+- `pgc migrate` applies the plain-SQL files of the migrations directory
+  exactly once each, in name order, over pgc's own wire client - no
+  external migration tool needed. Each file runs in its own transaction
+  together with its bookkeeping row in `pgc_migrations`; a
+  `-- pgc: no-transaction` first line opts a file out for statements
+  PostgreSQL refuses inside transactions. File hashes are recorded and
+  editing an applied file warns forever; out-of-order files apply with a
+  warning; the whole run holds an advisory lock so concurrent runs queue.
+  Forward-only by design - no down migrations.
+- `pgc migrate status` lists applied and pending files.
+- The `migrations` key in pgc.json names the directory (default
+  `migrations`).
+
 ## [0.2.1] - 2026-07-11
 
 ### Added

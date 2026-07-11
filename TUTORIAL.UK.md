@@ -14,9 +14,9 @@
 - [0. Передумови](#0-передумови)
 - [1. Створення проєкту](#1-створення-проєкту)
 - [2. PostgreSQL у Docker](#2-postgresql-у-docker)
-- [3. Написати й застосувати міграцію](#3-написати-й-застосувати-міграцію)
-- [4. Встановити pgc](#4-встановити-pgc)
-- [5. Вказати pgc базу](#5-вказати-pgc-базу)
+- [3. Встановити pgc](#3-встановити-pgc)
+- [4. Вказати pgc базу](#4-вказати-pgc-базу)
+- [5. Написати й застосувати міграцію](#5-написати-й-застосувати-міграцію)
 - [6. Спитати сервер про запит](#6-спитати-сервер-про-запит)
 - [7. Файл запитів](#7-файл-запитів)
 - [8. Мова анотацій](#8-мова-анотацій)
@@ -66,8 +66,6 @@ services:
       POSTGRES_DB: app
     ports:
       - "127.0.0.1:5433:5432"
-    volumes:
-      - ./migrations:/migrations:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app -d app"]
       interval: 1s
@@ -85,18 +83,10 @@ services:
   обрано, щоб ніколи не зіткнутися з PostgreSQL, який, можливо, вже
   крутиться локально на 5432; прив'язка до `127.0.0.1` ховає його від
   мережі.
-- **volumes** - твоя тека `./migrations` з'являється в контейнері як
-  `/migrations`, лише на читання, щоб `psql` у контейнері міг виконувати
-  файли.
 - **healthcheck** - дає `docker compose` знати, коли сервер справді
   готовий, а не просто запущений.
 
-Створи теку міграцій **до** запуску контейнера - Docker створює відсутні
-джерела bind-mount як теки від root, і тоді крок 3 упав би з помилкою
-прав:
-
 ```sh
-mkdir migrations
 docker compose up -d
 docker compose ps
 ```
@@ -104,56 +94,7 @@ docker compose ps
 Повторюй `docker compose ps`, доки сервіс `db` не покаже `(healthy)` - на
 першому запуску найдовше тягнеться образ.
 
-## 3. Написати й застосувати міграцію
-
-Міграція - це звичайний SQL-файл, що рухає схему на крок уперед. Створи
-`migrations/001_init.sql`:
-
-```sql
-CREATE TYPE note_status AS ENUM ('draft', 'published');
-
-CREATE TABLE notes (
-    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    title      text NOT NULL,
-    body       text NOT NULL DEFAULT '',
-    status     note_status NOT NULL DEFAULT 'draft',
-    tags       text[] NOT NULL DEFAULT '{}',
-    created_at timestamptz NOT NULL DEFAULT now()
-);
-```
-
-Що ці типи колонок дадуть пізніше: `GENERATED ALWAYS AS IDENTITY` -
-сучасний автоінкремент, `note_status` - справжній enum (стане Go-типом з
-константами), `text[]` - масив (стане `[]string`), а `timestamptz` -
-`time.Time`.
-
-Застосуй усі файли міграцій, у порядку імен, тим `psql`, що вже є
-всередині контейнера:
-
-```sh
-for f in migrations/*.sql; do
-  docker compose exec -T db psql -U app -d app -v ON_ERROR_STOP=1 -f "/$f"
-done
-```
-
-Читаємо команду: `exec -T db` запускає програму всередині сервісу `db`
-без термінала; `-U app -d app` обирає користувача й базу;
-`-v ON_ERROR_STOP=1` змушує `psql` гучно падати на першій помилці замість
-продовжувати; `-f "/$f"` виконує файл - початковий `/` працює, бо
-`./migrations` змонтовано в `/migrations`. Нумеровані імена файлів
-(`001_...`, `002_...`) тримають порядок стабільним, поки проєкт росте;
-будь-який спеціалізований інструмент міграцій підійде так само - pgc
-байдуже, як схема з'явилася.
-
-Перевір:
-
-```sh
-docker compose exec db psql -U app -d app -c '\dt'
-```
-
-Маєш побачити таблицю `notes`.
-
-## 4. Встановити pgc
+## 3. Встановити pgc
 
 ```sh
 go install github.com/goloop/pgc@latest
@@ -179,7 +120,7 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 побачити; `GOPROXY=direct go install github.com/goloop/pgc@latest` тягне
 прямо з репозиторію.
 
-## 5. Вказати pgc базу
+## 4. Вказати pgc базу
 
 pgc читає URL з'єднання з оточення - ніколи з конфіг-файлу, щоб облікові
 дані не потрапляли в репозиторій:
@@ -197,6 +138,61 @@ postgres://  app  :  secret  @  127.0.0.1 : 5433  /  app  ?sslmode=disable
 
 `sslmode=disable` правильний для локального контейнера - там нема TLS.
 Для віддалених серверів бери `require` або `verify-full`.
+
+## 5. Написати й застосувати міграцію
+
+Міграція - це звичайний SQL-файл, що рухає схему на крок уперед;
+`pgc migrate` застосовує кожен файл рівно один раз, у порядку імен. Створи
+`migrations/001_init.sql`:
+
+```sh
+mkdir migrations
+```
+
+```sql
+CREATE TYPE note_status AS ENUM ('draft', 'published');
+
+CREATE TABLE notes (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    title      text NOT NULL,
+    body       text NOT NULL DEFAULT '',
+    status     note_status NOT NULL DEFAULT 'draft',
+    tags       text[] NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
+Що ці типи колонок дадуть пізніше: `GENERATED ALWAYS AS IDENTITY` -
+сучасний автоінкремент, `note_status` - справжній enum (стане Go-типом з
+константами), `text[]` - масив (стане `[]string`), а `timestamptz` -
+`time.Time`.
+
+Застосуй:
+
+```sh
+pgc migrate
+```
+
+```
+applied 001_init.sql
+```
+
+Кожен файл виконується у власній транзакції разом зі своїм обліковим
+рядком у таблиці `pgc_migrations`, тож невдала міграція не лишає по собі
+нічого - виправ файл і запусти ще раз. Другий `pgc migrate` скаже
+`nothing to apply`: файли застосовуються рівно один раз, а редагування вже
+застосованого файлу дає попередження, а не повторний запуск (пиши
+наступну міграцію - схема рухається лише вперед). `pgc migrate status`
+показує, що застосовано, а що чекає. Нумеровані імена (`001_...`,
+`002_...`) тримають порядок стабільним, поки проєкт росте.
+
+Перевір тим `psql`, що всередині контейнера:
+
+```sh
+docker compose exec db psql -U app -d app -c '\dt'
+```
+
+Маєш побачити `notes` і `pgc_migrations`.
 
 ## 6. Спитати сервер про запит
 
@@ -584,7 +580,7 @@ notes/
 
 ```sh
 $EDITOR migrations/002_add_author.sql   # 1. новий файл міграції
-for f in migrations/*.sql; do ... done  # 2. застосувати (цикл із кроку 3)
+pgc migrate                             # 2. застосувати
 pgc generate                            # 3. перегенерувати
 go build ./...                          # 4. компілятор покаже кожен наслідок
 ```
@@ -602,14 +598,17 @@ pgc check              # компілює кожен запит проти БД,
 pgc generate && git diff --exit-code   # падає, якщо закомічений код застарів
 ```
 
-У CI підніми одноразовий PostgreSQL-сервіс, застосуй міграції так само,
-як у кроці 3, і запінь версії - і pgc, і Go:
+У CI підніми одноразовий PostgreSQL-сервіс і запінь версії - і pgc, і Go:
 
 ```sh
-go install github.com/goloop/pgc@v0.2.1
+go install github.com/goloop/pgc@v0.3.0
+pgc migrate
 pgc generate
 git diff --exit-code
 ```
+
+Два паралельні CI-джоби не влаштують гонку міграцій: `pgc migrate` тримає
+advisory-лок PostgreSQL на весь запуск, тож другий джоб чекає.
 
 ## 14. Розв'язання проблем
 
@@ -624,8 +623,8 @@ git diff --exit-code
 |---|---|---|
 | `connection refused` | контейнер не піднятий або порт не той | `docker compose ps`; порт у URL має збігатися з лівою частиною мапінгу `ports:` |
 | `password authentication failed` | облікові дані URL відрізняються від environment compose | звір `POSTGRES_USER`/`POSTGRES_PASSWORD` з URL |
-| `relation "notes" does not exist` | міграції не застосовані до цієї бази | повтори крок 3; перевір, що `-d app` збігається з базою в URL |
-| `no database url` | `PGC_DATABASE_URL` не експортований у цій оболонці | повтори `export` із кроку 5 |
+| `relation "notes" does not exist` | міграції не застосовані до цієї бази | `pgc migrate`; перевір, що база в URL та сама |
+| `no database url` | `PGC_DATABASE_URL` не експортований у цій оболонці | повтори `export` із кроку 4 |
 | `unsupported PostgreSQL type "xxx"` | тип колонки без дефолтного мапінгу | додай `"types": {"xxx": "string"}` у pgc.json або override на колонку |
 | `a result column has no name` | вираз без аліаса | дай його: `count(*) AS total` |
 | `generated name X collides` | дві таблиці мапляться на одне ім'я структури | додай запис `rename`, за потреби зі схемою |

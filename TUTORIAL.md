@@ -14,9 +14,9 @@ Reference documentation: **[DOC.md](DOC.md)**.
 - [0. Prerequisites](#0-prerequisites)
 - [1. Create the project](#1-create-the-project)
 - [2. Start PostgreSQL in Docker](#2-start-postgresql-in-docker)
-- [3. Write and apply a migration](#3-write-and-apply-a-migration)
-- [4. Install pgc](#4-install-pgc)
-- [5. Point pgc at the database](#5-point-pgc-at-the-database)
+- [3. Install pgc](#3-install-pgc)
+- [4. Point pgc at the database](#4-point-pgc-at-the-database)
+- [5. Write and apply a migration](#5-write-and-apply-a-migration)
 - [6. Ask the server about a query](#6-ask-the-server-about-a-query)
 - [7. Write the queries file](#7-write-the-queries-file)
 - [8. The annotation language](#8-the-annotation-language)
@@ -66,8 +66,6 @@ services:
       POSTGRES_DB: app
     ports:
       - "127.0.0.1:5433:5432"
-    volumes:
-      - ./migrations:/migrations:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app -d app"]
       interval: 1s
@@ -85,18 +83,10 @@ Line by line:
   `127.0.0.1:5433`. Port 5433 is chosen so it never clashes with a
   PostgreSQL you might already run locally on 5432; binding to `127.0.0.1`
   keeps it invisible to the network.
-- **volumes** - your `./migrations` directory appears inside the container
-  as `/migrations`, read-only, so `psql` in the container can execute the
-  files.
 - **healthcheck** - lets `docker compose` know when the server is actually
   ready, not merely started.
 
-Create the migrations directory **before** starting the container - Docker
-creates missing bind-mount sources as root-owned directories, and then step
-3 would fail with a permission error:
-
 ```sh
-mkdir migrations
 docker compose up -d
 docker compose ps
 ```
@@ -104,56 +94,7 @@ docker compose ps
 Repeat `docker compose ps` until the `db` service shows `(healthy)` - on
 the first run the image download takes the longest.
 
-## 3. Write and apply a migration
-
-A migration is a plain SQL file that moves the schema one step forward.
-Create `migrations/001_init.sql`:
-
-```sql
-CREATE TYPE note_status AS ENUM ('draft', 'published');
-
-CREATE TABLE notes (
-    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    title      text NOT NULL,
-    body       text NOT NULL DEFAULT '',
-    status     note_status NOT NULL DEFAULT 'draft',
-    tags       text[] NOT NULL DEFAULT '{}',
-    created_at timestamptz NOT NULL DEFAULT now()
-);
-```
-
-What the column types buy you later: `GENERATED ALWAYS AS IDENTITY` is the
-modern auto-increment, `note_status` is a real enum (it will become a Go
-type with constants), `text[]` is an array (it will become `[]string`), and
-`timestamptz` becomes `time.Time`.
-
-Apply every migration file, in name order, with the `psql` that ships
-inside the container:
-
-```sh
-for f in migrations/*.sql; do
-  docker compose exec -T db psql -U app -d app -v ON_ERROR_STOP=1 -f "/$f"
-done
-```
-
-Reading that command: `exec -T db` runs a program inside the `db` service
-without allocating a terminal; `-U app -d app` selects the user and
-database; `-v ON_ERROR_STOP=1` makes `psql` fail loudly on the first error
-instead of continuing; `-f "/$f"` executes the file - the leading `/` works
-because `./migrations` is mounted at `/migrations`. Numbered file names
-(`001_...`, `002_...`) keep the order stable as the project grows; any
-dedicated migration tool works just as well - pgc does not care how the
-schema got there.
-
-Verify:
-
-```sh
-docker compose exec db psql -U app -d app -c '\dt'
-```
-
-You should see the `notes` table.
-
-## 4. Install pgc
+## 3. Install pgc
 
 ```sh
 go install github.com/goloop/pgc@latest
@@ -179,7 +120,7 @@ If a release was tagged minutes ago, the Go module proxy may not have seen
 it yet; `GOPROXY=direct go install github.com/goloop/pgc@latest` fetches
 straight from the repository.
 
-## 5. Point pgc at the database
+## 4. Point pgc at the database
 
 pgc reads the connection URL from the environment - never from a config
 file, so credentials stay out of the repository:
@@ -197,6 +138,61 @@ scheme       user    password   host        port     db      options
 
 `sslmode=disable` is right for a local container - there is no TLS to
 speak. For remote servers use `require` or `verify-full`.
+
+## 5. Write and apply a migration
+
+A migration is a plain SQL file that moves the schema one step forward;
+`pgc migrate` applies each file exactly once, in name order. Create
+`migrations/001_init.sql`:
+
+```sh
+mkdir migrations
+```
+
+```sql
+CREATE TYPE note_status AS ENUM ('draft', 'published');
+
+CREATE TABLE notes (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    title      text NOT NULL,
+    body       text NOT NULL DEFAULT '',
+    status     note_status NOT NULL DEFAULT 'draft',
+    tags       text[] NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
+What the column types buy you later: `GENERATED ALWAYS AS IDENTITY` is the
+modern auto-increment, `note_status` is a real enum (it will become a Go
+type with constants), `text[]` is an array (it will become `[]string`), and
+`timestamptz` becomes `time.Time`.
+
+Apply:
+
+```sh
+pgc migrate
+```
+
+```
+applied 001_init.sql
+```
+
+Each file runs inside its own transaction together with its bookkeeping
+row in the `pgc_migrations` table, so a failed migration leaves nothing
+behind - fix the file and run again. A second `pgc migrate` says `nothing
+to apply`: files are applied exactly once, and editing an already-applied
+file earns a warning instead of a re-run (write the next migration
+instead - the schema only rolls forward). `pgc migrate status` lists what
+is applied and what is pending. Numbered names (`001_...`, `002_...`) keep
+the order stable as the project grows.
+
+Verify with the `psql` inside the container:
+
+```sh
+docker compose exec db psql -U app -d app -c '\dt'
+```
+
+You should see `notes` and `pgc_migrations`.
 
 ## 6. Ask the server about a query
 
@@ -584,7 +580,7 @@ Changing a table:
 
 ```sh
 $EDITOR migrations/002_add_author.sql   # 1. a new migration file
-for f in migrations/*.sql; do ... done  # 2. apply (the loop from step 3)
+pgc migrate                             # 2. apply it
 pgc generate                            # 3. regenerate
 go build ./...                          # 4. the compiler shows every impact
 ```
@@ -602,14 +598,18 @@ pgc check              # compiles every query against the DB, writes nothing
 pgc generate && git diff --exit-code   # fails if committed code is stale
 ```
 
-In CI, start a disposable PostgreSQL service, apply the migrations the same
-way as in step 3, and pin versions - both pgc's and Go's:
+In CI, start a disposable PostgreSQL service and pin versions - both pgc's
+and Go's:
 
 ```sh
-go install github.com/goloop/pgc@v0.2.1
+go install github.com/goloop/pgc@v0.3.0
+pgc migrate
 pgc generate
 git diff --exit-code
 ```
+
+Two concurrent CI jobs cannot race the migrations: `pgc migrate` holds a
+PostgreSQL advisory lock for the whole run, so the second job waits.
 
 ## 14. Troubleshooting
 
@@ -623,8 +623,8 @@ complaint additionally carries the character position inside the statement
 |---|---|---|
 | `connection refused` | the container is not up, or the port is wrong | `docker compose ps`; the URL port must match the left side of the `ports:` mapping |
 | `password authentication failed` | URL credentials differ from the compose environment | compare `POSTGRES_USER`/`POSTGRES_PASSWORD` with the URL |
-| `relation "notes" does not exist` | migrations were not applied to this database | re-run step 3; check `-d app` matches the URL database |
-| `no database url` | `PGC_DATABASE_URL` is not exported in this shell | re-run the `export` from step 5 |
+| `relation "notes" does not exist` | migrations were not applied to this database | `pgc migrate`; check the URL database matches |
+| `no database url` | `PGC_DATABASE_URL` is not exported in this shell | re-run the `export` from step 4 |
 | `unsupported PostgreSQL type "xxx"` | a column type pgc has no default mapping for | add `"types": {"xxx": "string"}` in pgc.json, or an override on the column |
 | `a result column has no name` | an expression without an alias | give it one: `count(*) AS total` |
 | `generated name X collides` | two tables map to the same struct name | add a `rename` entry, schema-qualified if needed |
