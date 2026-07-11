@@ -12,6 +12,11 @@ import (
 	"strings"
 )
 
+// maxScramIterations bounds the PBKDF2 iteration count a server may request,
+// so a hostile server cannot force an unbounded amount of CPU work. Real
+// servers use about 4096; this ceiling is far above any legitimate value.
+const maxScramIterations = 1 << 24
+
 // scramClient runs the client side of one SCRAM-SHA-256 exchange (RFC 5802,
 // RFC 7677) without channel binding, which is what PostgreSQL's SASL
 // authentication speaks. PostgreSQL takes the user name from the startup
@@ -60,7 +65,10 @@ func (s *scramClient) clientFinal(serverFirst []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !strings.HasPrefix(serverNonce, s.clientNonce) {
+	// The server nonce must be our client nonce plus the server's own random
+	// suffix; a nonce that merely equals ours (no suffix) is not acceptable.
+	if !strings.HasPrefix(serverNonce, s.clientNonce) ||
+		len(serverNonce) <= len(s.clientNonce) {
 		return nil, fmt.Errorf("pgwire: scram: server nonce does not extend ours")
 	}
 
@@ -128,7 +136,9 @@ func parseServerFirst(msg string) (nonce string, salt []byte, iters int, err err
 			}
 		case "i":
 			iters, err = strconv.Atoi(v)
-			if err != nil || iters <= 0 {
+			// Bound the iteration count: a hostile server could otherwise send
+			// a huge value to burn CPU in PBKDF2 (real servers send ~4096).
+			if err != nil || iters <= 0 || iters > maxScramIterations {
 				return "", nil, 0, fmt.Errorf("pgwire: scram iterations %q", v)
 			}
 		}

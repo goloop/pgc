@@ -1,5 +1,7 @@
 package pgwire
 
+import "fmt"
+
 // Query runs one SQL statement over the simple-query protocol and returns
 // every row as text-format values. A NULL becomes ("", false); everything
 // else is (value, true).
@@ -29,6 +31,10 @@ func (c *Conn) Query(sql string) ([][]Value, error) {
 		case 'D': // DataRow
 			r := &readBuf{b: payload}
 			n := int(r.int16())
+			if n < 0 {
+				return nil, fmt.Errorf(
+					"pgwire: DataRow with negative field count %d", n)
+			}
 			row := make([]Value, 0, n)
 			for range n {
 				size := int(r.int32())

@@ -3,7 +3,10 @@ package compile
 import (
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/goloop/pgc/internal/gen"
 	"github.com/goloop/pgc/internal/queryfile"
@@ -210,9 +213,61 @@ done:
 		return "", fmt.Errorf("type %q: want \"import/path.Type\"", expr)
 	}
 	imp, typ := rest[:dot], rest[dot+1:]
-	final := prefix + pkgName(imp) + "." + typ
+	final := prefix + c.selectorFor(imp) + "." + typ
 	c.typeImports[final] = imp
 	return final, nil
+}
+
+// selectorFor returns the package selector to use for an import path, keeping
+// selectors unique across imports. When two import paths share a base name
+// (a/types and b/types), or the base is not a valid Go identifier (a path
+// element with a dash), the selector is disambiguated and recorded as an
+// explicit import alias so the generated code compiles regardless of the
+// package's declared name.
+func (c *compiler) selectorFor(imp string) string {
+	if sel, ok := c.importSel[imp]; ok {
+		return sel
+	}
+	natural := pkgName(imp)
+	base := sanitizeSelector(natural)
+	sel := base
+	for n := 2; c.selUsed[sel] != "" && c.selUsed[sel] != imp; n++ {
+		sel = base + strconv.Itoa(n)
+	}
+	c.selUsed[sel] = imp
+	c.importSel[imp] = sel
+	// An alias is needed whenever the selector is not exactly the natural base
+	// (a collision suffix or a sanitized element), so the import binds to the
+	// selector we actually reference.
+	if sel != natural {
+		c.importAlias[imp] = sel
+	}
+	return sel
+}
+
+// sanitizeSelector turns a guessed package base into a valid Go identifier,
+// replacing every other rune with an underscore and prefixing p when it does
+// not start with a letter or underscore.
+func sanitizeSelector(base string) string {
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case unicode.IsLetter(r) || r == '_':
+			b.WriteRune(r)
+		case unicode.IsDigit(r):
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	s := b.String()
+	if s == "" {
+		return "pkg"
+	}
+	if r, _ := utf8.DecodeRuneInString(s); !unicode.IsLetter(r) && r != '_' {
+		return "p" + s
+	}
+	return s
 }
 
 // pkgName guesses the package name of an import path: the last element,

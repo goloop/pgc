@@ -41,6 +41,29 @@ func TestScramRejectsForeignNonce(t *testing.T) {
 	}
 }
 
+// A server nonce that only equals the client nonce (adds no suffix of its own)
+// must be rejected.
+func TestScramRejectsEqualNonce(t *testing.T) {
+	s := newScramClientNonce("", "pw", "abc")
+	s.clientFirst()
+	_, err := s.clientFinal([]byte("r=abc,s=c2FsdA==,i=4096"))
+	if err == nil || !strings.Contains(err.Error(), "nonce") {
+		t.Fatalf("want nonce error for equal nonce, got %v", err)
+	}
+}
+
+// An absurd iteration count from a hostile server must be rejected, not run
+// through PBKDF2.
+func TestScramRejectsHugeIterations(t *testing.T) {
+	if _, _, _, err := parseServerFirst("r=abc,s=c2FsdA==,i=99999999"); err == nil {
+		t.Fatal("want error for an iteration count above the ceiling")
+	}
+	// A normal count is still accepted.
+	if _, _, _, err := parseServerFirst("r=abc,s=c2FsdA==,i=4096"); err != nil {
+		t.Fatalf("normal iteration count rejected: %v", err)
+	}
+}
+
 func TestScramServerErrorAndBadSignature(t *testing.T) {
 	s := newScramClientNonce("", "pw", "abc")
 	s.clientFirst()

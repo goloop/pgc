@@ -78,9 +78,9 @@ func TestRunAppliesPendingInOrder(t *testing.T) {
 	// Lock taken and released, table ensured, transactions used.
 	for _, want := range []string{
 		"pg_advisory_lock(7366499)", "pg_advisory_unlock(7366499)",
-		"CREATE TABLE IF NOT EXISTS pgc_migrations",
+		"CREATE TABLE IF NOT EXISTS public.pgc_migrations",
 		"BEGIN", "COMMIT",
-		"INSERT INTO pgc_migrations (name, hash) VALUES ('001_a.sql'",
+		"INSERT INTO public.pgc_migrations (name, hash) VALUES ('001_a.sql'",
 	} {
 		if !db.has(want) {
 			t.Errorf("missing %q in executed scripts:\n%s", want,
@@ -145,7 +145,7 @@ func TestRunRollsBackOnFailure(t *testing.T) {
 	if !db.has("ROLLBACK") {
 		t.Error("no ROLLBACK issued")
 	}
-	if db.has("INSERT INTO pgc_migrations") {
+	if db.has("INSERT INTO public.pgc_migrations") {
 		t.Error("bookkeeping row must not be inserted for a failed file")
 	}
 }
@@ -215,5 +215,21 @@ SELECT "quoted;ident" FROM t
 	}
 	if !strings.Contains(stmts[2], "it''s; fine") {
 		t.Errorf("string literal was split: %q", stmts[2])
+	}
+}
+
+// An E'...' escape string with a backslash-escaped quote and an embedded
+// semicolon must stay one statement.
+func TestSplitStatementsEString(t *testing.T) {
+	sql := `INSERT INTO t VALUES (E'a\';b'); SELECT 1`
+	stmts := splitStatements(sql)
+	if len(stmts) != 2 {
+		t.Fatalf("got %d statements: %v", len(stmts), stmts)
+	}
+	if !strings.Contains(stmts[0], `E'a\';b'`) {
+		t.Errorf("E-string was split: %q", stmts[0])
+	}
+	if stmts[1] != "SELECT 1" {
+		t.Errorf("second statement = %q", stmts[1])
 	}
 }

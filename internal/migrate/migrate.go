@@ -28,6 +28,21 @@ type DB interface {
 // a big-endian integer.
 const lockKey = 7366499
 
+// migrationsTable is the fully qualified bookkeeping table. Qualifying it (and
+// pinning the search_path) keeps a decoy pgc_migrations in an earlier schema
+// from shadowing the real migration history.
+const migrationsTable = "public.pgc_migrations"
+
+// pinSearchPath fixes schema resolution to public for the session, so
+// unqualified names in migration files and the bookkeeping table resolve
+// predictably regardless of the connection's inherited search_path.
+func pinSearchPath(db DB) error {
+	if _, err := db.Query("SET search_path TO public"); err != nil {
+		return fmt.Errorf("migrate: set search_path: %w", err)
+	}
+	return nil
+}
+
 // noTxMarker on the first line of a file opts it out of the transaction
 // wrapper, for statements PostgreSQL refuses to run inside one
 // (CREATE INDEX CONCURRENTLY and friends).
@@ -58,6 +73,9 @@ func Run(db DB, dir string) (*Result, error) {
 	}
 	defer db.Query(fmt.Sprintf("SELECT pg_advisory_unlock(%d)", lockKey))
 
+	if err := pinSearchPath(db); err != nil {
+		return nil, err
+	}
 	if err := ensureTable(db); err != nil {
 		return nil, err
 	}
@@ -106,6 +124,9 @@ func Run(db DB, dir string) (*Result, error) {
 // Status lists every migration file and recorded row, without changing
 // anything.
 func Status(db DB, dir string) ([]Migration, []string, error) {
+	if err := pinSearchPath(db); err != nil {
+		return nil, nil, err
+	}
 	if err := ensureTable(db); err != nil {
 		return nil, nil, err
 	}
@@ -116,7 +137,7 @@ func Status(db DB, dir string) ([]Migration, []string, error) {
 
 	rows, err := db.Query(
 		"SELECT name, to_char(applied_at, 'YYYY-MM-DD HH24:MI') " +
-			"FROM pgc_migrations ORDER BY name")
+			"FROM " + migrationsTable + " ORDER BY name")
 	if err != nil {
 		return nil, nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -148,7 +169,7 @@ func Status(db DB, dir string) ([]Migration, []string, error) {
 // statement-by-statement autocommit for DDL that refuses transactions.
 func apply(db DB, name, content, hash string) error {
 	record := fmt.Sprintf(
-		"INSERT INTO pgc_migrations (name, hash) VALUES ('%s', '%s')",
+		"INSERT INTO "+migrationsTable+" (name, hash) VALUES ('%s', '%s')",
 		sqlEscape(name), hash)
 
 	firstLine, _, _ := strings.Cut(strings.TrimSpace(content), "\n")
@@ -185,10 +206,10 @@ func apply(db DB, name, content, hash string) error {
 }
 
 // ensureTable creates the bookkeeping table on first contact. It is created
-// unqualified - in the first schema of the connection's search_path,
-// normally public.
+// in the public schema (fully qualified, with the search_path pinned by the
+// caller) so it cannot be shadowed by a decoy table in another schema.
 func ensureTable(db DB) error {
-	_, err := db.Query(`CREATE TABLE IF NOT EXISTS pgc_migrations (
+	_, err := db.Query(`CREATE TABLE IF NOT EXISTS ` + migrationsTable + ` (
     name       text PRIMARY KEY,
     hash       text NOT NULL,
     applied_at timestamptz NOT NULL DEFAULT now()
@@ -214,7 +235,7 @@ func load(db DB, dir string) ([]string, map[string]string, error) {
 	}
 	sort.Strings(files)
 
-	rows, err := db.Query("SELECT name, hash FROM pgc_migrations")
+	rows, err := db.Query("SELECT name, hash FROM " + migrationsTable)
 	if err != nil {
 		return nil, nil, fmt.Errorf("migrate: %w", err)
 	}

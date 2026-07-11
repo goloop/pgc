@@ -23,6 +23,11 @@ type Input struct {
 	// types from packages other than the well-known standard ones.
 	TypeImports map[string]string
 
+	// ImportAliases maps an import path to the alias it must be imported under,
+	// set only when the natural package name would collide with another import
+	// or is not a valid identifier. Paths absent from the map use no alias.
+	ImportAliases map[string]string
+
 	// ArrayHelpers names the array adapter types (int64Array, ...) that
 	// queries use; when non-empty a pgarray.go is emitted.
 	ArrayHelpers []string
@@ -367,19 +372,26 @@ func emitImports(in Input, base []string, types []string) string {
 	sort.Strings(std)
 	sort.Strings(ext)
 
+	importLine := func(imp string) string {
+		if alias := in.ImportAliases[imp]; alias != "" {
+			return fmt.Sprintf("%s %q", alias, imp)
+		}
+		return fmt.Sprintf("%q", imp)
+	}
+
 	if len(std)+len(ext) == 1 {
-		return fmt.Sprintf("\nimport %q\n", append(std, ext...)[0])
+		return fmt.Sprintf("\nimport %s\n", importLine(append(std, ext...)[0]))
 	}
 	var b strings.Builder
 	b.WriteString("\nimport (\n")
 	for _, imp := range std {
-		fmt.Fprintf(&b, "\t%q\n", imp)
+		fmt.Fprintf(&b, "\t%s\n", importLine(imp))
 	}
 	if len(std) > 0 && len(ext) > 0 {
 		b.WriteString("\n")
 	}
 	for _, imp := range ext {
-		fmt.Fprintf(&b, "\t%q\n", imp)
+		fmt.Fprintf(&b, "\t%s\n", importLine(imp))
 	}
 	b.WriteString(")\n")
 	return b.String()

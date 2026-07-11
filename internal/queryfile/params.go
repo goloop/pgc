@@ -342,14 +342,24 @@ func skipQuoted(s string, q byte) string {
 	return ""
 }
 
-// readQuoted reads a "quoted identifier" and returns its content.
+// readQuoted reads a "quoted identifier" and returns its unescaped content and
+// the rest of the input. A doubled quote inside the identifier is an escaped
+// literal quote ("user""id" is the identifier user"id), so the closing quote is
+// only the first quote not immediately followed by another.
 func readQuoted(s string) (string, string) {
+	var b strings.Builder
 	for i := 1; i < len(s); i++ {
 		if s[i] == '"' {
-			return s[1:i], s[i+1:]
+			if i+1 < len(s) && s[i+1] == '"' {
+				b.WriteByte('"')
+				i++
+				continue
+			}
+			return b.String(), s[i+1:]
 		}
+		b.WriteByte(s[i])
 	}
-	return s[1:], ""
+	return b.String(), ""
 }
 
 // skipDollarQuoted skips $tag$ ... $tag$ literals.

@@ -1,5 +1,7 @@
 package pgwire
 
+import "fmt"
+
 // Column describes one result column of a statement, as reported by the
 // backend's RowDescription. TableOID and Attnum are non-zero only when the
 // column comes directly from a table; expressions have no origin and get
@@ -62,6 +64,10 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 		case 't': // ParameterDescription
 			r := &readBuf{b: payload}
 			n := int(r.int16())
+			if n < 0 {
+				return nil, fmt.Errorf(
+					"pgwire: ParameterDescription with negative count %d", n)
+			}
 			for range n {
 				st.ParamOIDs = append(st.ParamOIDs, uint32(r.int32()))
 			}
@@ -71,6 +77,10 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 		case 'T': // RowDescription
 			r := &readBuf{b: payload}
 			n := int(r.int16())
+			if n < 0 {
+				return nil, fmt.Errorf(
+					"pgwire: RowDescription with negative count %d", n)
+			}
 			for range n {
 				col := Column{Name: r.cstring()}
 				col.TableOID = uint32(r.int32())

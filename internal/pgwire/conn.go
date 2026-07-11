@@ -258,6 +258,11 @@ func (c *Conn) startup(cfg Config) error {
 		case 'R': // Authentication*
 			r := &readBuf{b: payload}
 			code := r.int32()
+			if r.err != nil {
+				// A truncated 'R' payload leaves code at 0, which would be
+				// misread as AuthenticationOk. Reject it instead.
+				return fmt.Errorf("pgwire: truncated authentication message")
+			}
 			switch code {
 			case 0: // AuthenticationOk
 			case 3: // CleartextPassword

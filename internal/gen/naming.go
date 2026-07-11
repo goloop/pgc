@@ -1,6 +1,10 @@
 package gen
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // acronyms are the initialisms spelled in full caps inside generated
 // identifiers, so user_api_id becomes UserAPIID, not UserApiId.
@@ -13,18 +17,61 @@ var acronyms = map[string]bool{
 }
 
 // CamelCase converts a snake_case database name to an exported Go
-// identifier: user_api_id becomes UserAPIID.
+// identifier: user_api_id becomes UserAPIID. It always returns a valid,
+// compilable exported identifier: non-identifier runes are dropped, the first
+// rune is upper-cased on a rune boundary (so a non-ASCII name is not mangled),
+// and a leading digit or an empty result is prefixed with X. PostgreSQL allows
+// quoted names that are not valid Go identifiers, so this keeps generation from
+// emitting code that will not compile.
 func CamelCase(s string) string {
 	var b strings.Builder
 	for _, w := range splitWords(s) {
+		w = keepIdentRunes(w)
+		if w == "" {
+			continue
+		}
 		if acronyms[w] {
 			b.WriteString(strings.ToUpper(w))
 			continue
 		}
-		b.WriteString(strings.ToUpper(w[:1]))
-		b.WriteString(w[1:])
+		b.WriteString(upperFirst(w))
+	}
+	return ensureExported(b.String())
+}
+
+// keepIdentRunes drops runes that cannot appear in a Go identifier (anything
+// other than a Unicode letter, digit or underscore).
+func keepIdentRunes(w string) string {
+	var b strings.Builder
+	for _, r := range w {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			b.WriteRune(r)
+		}
 	}
 	return b.String()
+}
+
+// upperFirst upper-cases the first rune of w on a rune boundary, so a non-ASCII
+// name is not cut mid-rune.
+func upperFirst(w string) string {
+	if w == "" {
+		return ""
+	}
+	r, size := utf8.DecodeRuneInString(w)
+	return string(unicode.ToUpper(r)) + w[size:]
+}
+
+// ensureExported makes name a valid exported Go identifier: X for an empty
+// name, and an X prefix when the first rune is not a letter (for example a
+// column that begins with a digit).
+func ensureExported(name string) string {
+	if name == "" {
+		return "X"
+	}
+	if r, _ := utf8.DecodeRuneInString(name); !unicode.IsLetter(r) {
+		return "X" + name
+	}
+	return name
 }
 
 // snakeCase converts an exported Go identifier back to snake_case:
@@ -57,19 +104,23 @@ func snakeCase(s string) string {
 // lowerCamel converts a snake_case name to an unexported identifier:
 // user_id becomes userID, id stays id.
 func lowerCamel(s string) string {
-	words := splitWords(s)
-	if len(words) == 0 {
-		return ""
-	}
 	var b strings.Builder
-	b.WriteString(words[0])
-	for _, w := range words[1:] {
+	first := true
+	for _, w := range splitWords(s) {
+		w = keepIdentRunes(w)
+		if w == "" {
+			continue
+		}
+		if first {
+			b.WriteString(w) // first word stays lowercase
+			first = false
+			continue
+		}
 		if acronyms[w] {
 			b.WriteString(strings.ToUpper(w))
 			continue
 		}
-		b.WriteString(strings.ToUpper(w[:1]))
-		b.WriteString(w[1:])
+		b.WriteString(upperFirst(w))
 	}
 	return b.String()
 }
@@ -80,6 +131,10 @@ func paramName(s string) string {
 	name := lowerCamel(s)
 	if name == "" {
 		return "arg"
+	}
+	// An unexported identifier still cannot start with a digit; prefix x.
+	if r, _ := utf8.DecodeRuneInString(name); !unicode.IsLetter(r) && r != '_' {
+		name = "x" + name
 	}
 	if goKeywords[name] {
 		return name + "_"

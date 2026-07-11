@@ -323,3 +323,41 @@ SELECT id, email FROM users;
 		t.Errorf("err = %v", err)
 	}
 }
+
+// Two custom types from different packages that share a base name must get
+// distinct selectors and explicit import aliases, and an import path element
+// with a dash must produce a valid selector.
+func TestSelectorForCollisionAndSanitize(t *testing.T) {
+	c := &compiler{
+		typeImports: map[string]string{},
+		importSel:   map[string]string{},
+		selUsed:     map[string]string{},
+		importAlias: map[string]string{},
+	}
+	a := c.selectorFor("github.com/a/types")
+	b := c.selectorFor("github.com/b/types")
+	if a == b {
+		t.Fatalf("colliding selectors: both %q", a)
+	}
+	if a != "types" {
+		t.Errorf("first selector = %q, want types", a)
+	}
+	// The second must be aliased, since its natural base collides.
+	if c.importAlias["github.com/b/types"] != b {
+		t.Errorf("second import not aliased: %v", c.importAlias)
+	}
+	// A repeat call for the same path is stable.
+	if again := c.selectorFor("github.com/a/types"); again != a {
+		t.Errorf("selector not stable: %q vs %q", again, a)
+	}
+	// A dashed path element yields a valid identifier selector with an alias.
+	dash := c.selectorFor("github.com/x/go-uuid")
+	for _, r := range dash {
+		if r == '-' {
+			t.Fatalf("selector %q contains a dash", dash)
+		}
+	}
+	if c.importAlias["github.com/x/go-uuid"] == "" {
+		t.Error("dashed import not aliased")
+	}
+}

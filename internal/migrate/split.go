@@ -22,9 +22,9 @@ func splitStatements(sql string) []string {
 		c := sql[i]
 		switch {
 		case c == '\'':
-			i = skipQuoted(sql, i, '\'')
+			i = skipQuoted(sql, i, '\'', isEString(sql, i))
 		case c == '"':
-			i = skipQuoted(sql, i, '"')
+			i = skipQuoted(sql, i, '"', false)
 		case strings.HasPrefix(sql[i:], "--"):
 			if j := strings.IndexByte(sql[i:], '\n'); j >= 0 {
 				i += j + 1
@@ -47,10 +47,16 @@ func splitStatements(sql string) []string {
 	return stmts
 }
 
-// skipQuoted advances past a quoted region opened at i, where a doubled
-// quote is an escape.
-func skipQuoted(sql string, i int, q byte) int {
+// skipQuoted advances past a quoted region opened at i, where a doubled quote
+// is an escape. When backslashEscapes is set (a PostgreSQL E'...' escape
+// string), a backslash also escapes the next byte, so E'a\';b' is one literal
+// and its embedded semicolon does not split the statement.
+func skipQuoted(sql string, i int, q byte, backslashEscapes bool) int {
 	for i++; i < len(sql); i++ {
+		if backslashEscapes && sql[i] == '\\' {
+			i++ // the loop's i++ skips the escaped byte as well
+			continue
+		}
 		if sql[i] == q {
 			if i+1 < len(sql) && sql[i+1] == q {
 				i++
@@ -60,6 +66,29 @@ func skipQuoted(sql string, i int, q byte) int {
 		}
 	}
 	return len(sql)
+}
+
+// isEString reports whether the single quote at i opens a PostgreSQL escape
+// string, i.e. it is immediately preceded by a standalone E (or e) token.
+func isEString(sql string, i int) bool {
+	if i == 0 {
+		return false
+	}
+	if p := sql[i-1]; p != 'E' && p != 'e' {
+		return false
+	}
+	// The E must be a standalone prefix, not the tail of an identifier such as
+	// the "e" in "true".
+	if i-1 == 0 {
+		return true
+	}
+	return !isIdentByte(sql[i-2])
+}
+
+// isIdentByte reports whether c can appear inside a SQL identifier.
+func isIdentByte(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+		c >= '0' && c <= '9'
 }
 
 // skipBlockComment advances past a /* */ comment opened at i; PostgreSQL

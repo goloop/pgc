@@ -91,3 +91,15 @@ func TestInferUpdateSet(t *testing.T) {
 		t.Errorf("names = %v", names)
 	}
 }
+
+// A quoted identifier with a doubled (escaped) quote is read whole, so the
+// closing quote is not mistaken for the first inner quote.
+func TestReadQuotedDoubledQuote(t *testing.T) {
+	val, rest := readQuoted(`"user""id" = $1`)
+	if val != `user"id` {
+		t.Errorf("val = %q, want %q", val, `user"id`)
+	}
+	if rest != " = $1" {
+		t.Errorf("rest = %q, want %q", rest, " = $1")
+	}
+}

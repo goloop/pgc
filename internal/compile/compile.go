@@ -70,6 +70,9 @@ func Run(db DB, cfg config.Config) (*Result, error) {
 		enums:       map[uint32]gen.Enum{},
 		helpers:     map[string]bool{},
 		typeImports: map[string]string{},
+		importSel:   map[string]string{},
+		selUsed:     map[string]string{},
+		importAlias: map[string]string{},
 	}
 	files := map[string]*gen.SrcFile{}
 	var fileOrder []string
@@ -93,6 +96,7 @@ func Run(db DB, cfg config.Config) (*Result, error) {
 	in := gen.Input{
 		Package:       cfg.Package,
 		TypeImports:   c.typeImports,
+		ImportAliases: c.importAlias,
 		JSONTags:      cfg.JSONTags,
 		EmitInterface: cfg.Interface,
 	}
@@ -186,6 +190,9 @@ type compiler struct {
 	enums       map[uint32]gen.Enum  // enum types emitted alongside models
 	helpers     map[string]bool      // array adapters in use
 	typeImports map[string]string    // custom type expr to import path
+	importSel   map[string]string    // import path to chosen package selector
+	selUsed     map[string]string    // selector to the import path that owns it
+	importAlias map[string]string    // import path to alias (only when needed)
 	warnings    []string
 }
 

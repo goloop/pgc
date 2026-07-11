@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-12
+
+### Security
+- The wire protocol client no longer trusts message field counts blindly: a
+  `DataRow`, `ParameterDescription` or `RowDescription` with a negative count
+  (for example `0xffff` read as `int16`) returns an error instead of panicking.
+- A truncated authentication (`R`) message is rejected instead of being read as
+  `AuthenticationOk` (its zeroed code).
+- The SCRAM iteration count is bounded (ceiling `1<<24`; real servers use
+  ~4096), so a hostile server cannot force unbounded PBKDF2 work, and a server
+  nonce that merely equals the client nonce (no server suffix) is rejected.
+- `migrate` pins `search_path` to `public` and fully qualifies the
+  `pgc_migrations` bookkeeping table, so a decoy table in another schema cannot
+  shadow the real migration history and hide pending migrations.
+
+### Fixed
+- Generated identifiers are always valid, compilable Go: `CamelCase` now
+  capitalizes on a rune boundary (a non-ASCII column name is no longer mangled),
+  drops non-identifier runes, and prefixes a leading digit or an empty result
+  with `X`. A quoted PostgreSQL name that is not a valid Go identifier no longer
+  produces code that fails to compile.
+- The migration statement splitter understands `E'...'` escape strings, so a
+  backslash-escaped quote with an embedded semicolon no longer splits a
+  statement and breaks a no-transaction migration.
+- Parameter-name inference reads a quoted identifier with a doubled quote whole
+  (`"user""id"` is `user"id`), instead of truncating at the first inner quote.
+- Two custom types from different packages that share a base name now get
+  distinct selectors and explicit import aliases, and an import path element
+  with a dash yields a valid selector, so the generated import block compiles.
+
 ## [0.5.1] - 2026-07-11
 
 ### Fixed
