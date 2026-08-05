@@ -252,7 +252,11 @@ func (c *compiler) compileQuery(q qfQuery, st *pgwire.Statement) (gen.Query, err
 		}
 	}
 
-	if outerJoinRe.MatchString(q.SQL) {
+	// Only worth saying to an author who has not thought about it. A query
+	// whose nullability is already spelled out column by column gets the
+	// warning right too, and repeating it there teaches everyone to skip
+	// warnings - including the ones on the queries that do need them.
+	if outerJoinRe.MatchString(q.SQL) && !statesNullability(q) {
 		c.warnings = append(c.warnings, fmt.Sprintf(
 			"%s:%d: %s uses an outer join; the catalog cannot see which side "+
 				"is nullable - add \"-- override: <column> nullable\" for columns "+

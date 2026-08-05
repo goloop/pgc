@@ -396,6 +396,13 @@ domain's own name takes precedence when you want something else.
   `nullable` overrides on the columns from the outer side. It warns rather
   than silently lying.
 
+  The warning stops once the query states nullability for any of its result
+  columns - one `-- override: <column> nullable` or `notnull` is enough. It is
+  a prompt to think about the outer side, not a per-column check: pgc cannot
+  tell which columns came from it without parsing the SQL. Once you have
+  written the nullability down, repeating the warning on every run would only
+  teach you to scroll past it, and past the queries that still need it.
+
 ## Enums
 
 A PostgreSQL enum becomes a named string type with one constant per label,

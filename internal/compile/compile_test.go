@@ -158,6 +158,27 @@ func TestRunOuterJoinWarning(t *testing.T) {
 	}
 }
 
+// An author who has already written the nullability down has done the thing
+// the warning asks for; saying it anyway is how warnings become noise.
+func TestRunOuterJoinSilentWhenStated(t *testing.T) {
+	sql := "SELECT u.id, u.email FROM users u LEFT JOIN users x ON true"
+	dir := writeQueries(t,
+		"-- name: Joined :many\n-- override: email nullable\n"+sql+";\n")
+
+	db := &fakeDB{statements: map[string]*pgwire.Statement{
+		sql: {Columns: []pgwire.Column{
+			usersCol(1, "id", 20), usersCol(2, "email", 25),
+		}},
+	}}
+	res, err := Run(db, testConfig(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", res.Warnings)
+	}
+}
+
 func TestRunErrors(t *testing.T) {
 	cases := []struct {
 		name, src string

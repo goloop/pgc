@@ -339,6 +339,19 @@ func overrideForColumn(q qfQuery, name string) *queryfile.Override {
 	return nil
 }
 
+// statesNullability reports whether the query says anywhere, for any result
+// column, whether it can be null. One such line is enough: nullability was on
+// the author's mind when the query was written, which is all the outer-join
+// warning is trying to put there.
+func statesNullability(q qfQuery) bool {
+	for _, o := range q.Overrides {
+		if o.Column != "" && o.Null != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // checkOverrides rejects overrides and param annotations that name a
 // parameter or column the statement does not have - almost always a typo.
 func checkOverrides(q qfQuery, paramCount int, columns []string) error {

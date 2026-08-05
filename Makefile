@@ -19,7 +19,7 @@ TARGETS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 build:
 	go build -trimpath -o pgc .
 
-check: version
+check:
 	gofmt -l .
 	go vet ./...
 	go test ./...
@@ -27,6 +27,10 @@ check: version
 # version fails when main.go and the newest tag name different versions, so a
 # release cannot be cut with a stale constant. Bump the constant in the same
 # commit the tag will point at - documentation-only releases included.
+#
+# It guards dist and release only. Between releases the constant is meant to be
+# ahead of the newest tag, so making everyday commands depend on this would
+# fail exactly when the work was done right.
 version:
 	@expected=$(VERSION); expected=$${expected#v}; \
 	found=$$(sed -n 's/^const version = "\(.*\)"$$/\1/p' main.go); \

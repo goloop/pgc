@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-08-05
+
+### Fixed
+- `make check` no longer depends on the version guard added in 0.7.2. Between
+  releases the constant is meant to be ahead of the newest tag, so the everyday
+  command failed precisely when the work had been done in the right order. The
+  guard stays on `dist` and `release`, which is where it belongs.
+- The outer-join warning stays quiet once a query states the nullability of
+  its result columns. It fired on every outer join, including the ones written
+  correctly, so a project that had done the work still saw the warning on every
+  run - and learned to scroll past it, which is exactly how the queries that do
+  need it get missed.
+
 ## [0.7.2] - 2026-08-05
 
 ### Fixed
