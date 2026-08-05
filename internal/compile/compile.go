@@ -274,7 +274,7 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 	}
 
 	if len(cols) == 1 && len(q.Embeds) == 0 {
-		expr, helper, err := c.columnType(q, cols[0])
+		expr, helper, err := c.columnType(q, cols[0], 0, len(cols))
 		if err != nil {
 			return gen.Ret{}, err
 		}
@@ -342,7 +342,7 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 		if err := addName(c.namer.CamelCase(col.Name)); err != nil {
 			return gen.Ret{}, err
 		}
-		expr, helper, err := c.columnType(q, col)
+		expr, helper, err := c.columnType(q, col, i, len(cols))
 		if err != nil {
 			return gen.Ret{}, err
 		}
@@ -470,10 +470,19 @@ func (c *compiler) modelFor(table *catalog.Table) (gen.Model, error) {
 
 // columnType resolves one result column, honoring its override and the
 // catalog's attnotnull when the column has a table origin.
-func (c *compiler) columnType(q qfQuery, col pgwire.Column) (string, string, error) {
+//
+// A column with no table origin is an expression, which the catalog knows
+// nothing about; a short list of expressions that cannot produce NULL is
+// recognised instead, so a count does not come back as a pointer. Everything
+// else stays nullable - see neverNull.
+func (c *compiler) columnType(
+	q qfQuery, col pgwire.Column, index, columns int,
+) (string, string, error) {
 	notNull := false
 	if col.TableOID != 0 {
 		notNull = c.cat.NotNull(col.TableOID, col.Attnum)
+	} else {
+		notNull = expressionNotNull(q.SQL, index, columns)
 	}
 	expr, helper, err := c.goType(col.TypeOID, notNull, overrideForColumn(q, col.Name))
 	if err != nil {

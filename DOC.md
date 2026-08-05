@@ -308,9 +308,27 @@ domain's own name takes precedence when you want something else.
 
 - A column that comes straight from a table uses the catalog's
   `attnotnull`.
-- An expression (`count(*)`, `coalesce(...)`, computed values) has no
-  origin, so it is nullable by default - add
+- An expression has no origin, so the catalog cannot describe it. A short
+  list of expressions that cannot produce NULL is recognised anyway:
+
+  | Expression | Why |
+  |---|---|
+  | `count(...)` | returns 0 for no rows, never NULL |
+  | `coalesce(..., <literal>)` | a non-null last argument is what makes it total |
+  | `'draft'`, `0`, `true`, `'draft'::text` | a non-null constant, optionally cast to a built-in type |
+
+  Everything else - `max(...)`, `sum(...)`, `coalesce(a, b)` of two columns,
+  arithmetic, scalar subqueries - stays nullable. Add
   `-- override: <name> notnull` when you know better.
+
+  The inference needs each output expression to line up with a described
+  column, so it gives up entirely - for every column of that query - when the
+  list cannot be split with certainty: a `*` or `t.*`, a `UNION`, a `WITH`, a
+  `DISTINCT ON`. It also only reads the expression itself: `count(*) OVER ()`
+  and `count(*) FILTER (WHERE ...)` are left nullable rather than guessed at.
+  A rule that is right most of the time would be worse than none: an override
+  is a decision you made, while a wrong inference is a NULL arriving at run
+  time in a value that cannot hold one.
 - Parameters are non-nullable by default; hand in a pointer type with an
   override when NULL is a valid argument.
 - **Outer joins**: the catalog still reports the joined table's columns as
