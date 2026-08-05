@@ -153,6 +153,25 @@ func TestRowStructAndParamsStruct(t *testing.T) {
 	}
 }
 
+// TestUsesParamStruct pins the threshold itself. Everything that emits,
+// signs or reserves the params struct reads this one predicate, so the
+// boundary is worth stating outright.
+func TestUsesParamStruct(t *testing.T) {
+	params := func(n int) []Param {
+		var out []Param
+		for i := 0; i < n; i++ {
+			out = append(out, Param{Name: "p", Type: "int64"})
+		}
+		return out
+	}
+	for n, want := range map[int]bool{0: false, 1: false, 3: false, 4: true, 9: true} {
+		q := Query{Name: "Q", Params: params(n)}
+		if got := q.UsesParamStruct(); got != want {
+			t.Errorf("%d params: UsesParamStruct() = %v, want %v", n, got, want)
+		}
+	}
+}
+
 // TestQuerierImportsOnlyWhatItSpells checks that querier.go imports nothing
 // on account of parameters that the interface never spells out. Past four
 // parameters the signature is an XxxParams struct, so a json.RawMessage or a

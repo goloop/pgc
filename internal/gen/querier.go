@@ -28,7 +28,7 @@ func emitQuerier(in Input) string {
 			// say, a json.RawMessage parameter imports encoding/json
 			// into a file that never spells it out, and the generated
 			// package does not compile.
-			if !usesParamStruct(q) {
+			if !q.UsesParamStruct() {
 				for _, p := range q.Params {
 					types = append(types, p.Type)
 				}
@@ -71,13 +71,8 @@ func querierParams(q Query) string {
 	for _, p := range q.Params {
 		names = append(names, paramName(p.Name))
 	}
-	return signatureParams(q.Params, names, usesParamStruct(q), q.Name)
+	return signatureParams(q.Params, names, q.UsesParamStruct(), q.Name)
 }
-
-// usesParamStruct reports whether a query's parameters are passed as an
-// XxxParams struct rather than spelled out one by one. The threshold lives
-// here so the signature and the import list can never disagree about it.
-func usesParamStruct(q Query) bool { return len(q.Params) >= 4 }
 
 // resultOf renders a query's result list.
 func resultOf(q Query) string {

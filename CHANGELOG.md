@@ -13,9 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `XxxParams` struct. Past four parameters the interface signature spells out
   the struct name, not the individual types, so collecting those types for the
   import list produced an import the file never used and a generated package
-  that did not compile. Within `querier.go` the four-parameter threshold now
-  lives in a single place, `usesParamStruct`, so the signature and the import
-  list cannot disagree about it.
+  that did not compile.
+- The four-argument threshold is written down once, as `gen.Query`'s
+  `UsesParamStruct` method, and everything that depends on it reads it there:
+  the method signature and the struct definition, the `Querier` interface and
+  its import list, and the check that reserves the name `XxxParams` at package
+  level. Those three sites each carried their own copy of the rule, which is
+  how the import list came to disagree with the signature in the first place;
+  a fourth copy decided whether a genuine name collision was reported at all.
 - `pgc version` prints the real version again: the constant had been left at
   `0.5.1` through the 0.6.0 release.
 

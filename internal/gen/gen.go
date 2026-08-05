@@ -115,6 +115,17 @@ type Query struct {
 	Ret     Ret
 }
 
+// UsesParamStruct reports whether the query passes its arguments as a
+// generated XxxParams struct rather than one positional argument each.
+//
+// This is the one place the four-argument threshold is written down. Three
+// things depend on it and must never disagree: the method signature and the
+// struct definition, the Querier interface and its import list (a collapsed
+// signature names the struct, not the parameter types, so those types must
+// not pull imports in), and the collision check that reserves the name
+// XxxParams at package level.
+func (q Query) UsesParamStruct() bool { return len(q.Params) >= 4 }
+
 // Param is one $N argument with its database-side name and Go type.
 type Param struct {
 	Name   string // raw name, e.g. user_id or arg2
@@ -410,7 +421,7 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 	fmt.Fprintf(b, "\nconst %s = %s\n", constName, backquote(q.SQL))
 
 	// Params struct from four arguments up.
-	useParamsStruct := len(q.Params) >= 4
+	useParamsStruct := q.UsesParamStruct()
 	if useParamsStruct {
 		fmt.Fprintf(b, "\n// %sParams holds the arguments of %s.\n", q.Name, q.Name)
 		fmt.Fprintf(b, "type %sParams struct {\n", q.Name)

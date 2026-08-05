@@ -173,7 +173,7 @@ func checkNameCollisions(in gen.Input) error {
 					return err
 				}
 			}
-			if len(q.Params) >= 4 {
+			if q.UsesParamStruct() {
 				if err := claim(q.Name+"Params", "the params struct of "+q.Name); err != nil {
 					return err
 				}
