@@ -26,7 +26,7 @@ type Query struct {
 	Line int    // 1-based line of the -- name: header
 
 	Overrides  []Override
-	ParamNames map[int]string // $N (1-based) to a name from -- param:
+	ParamNames map[int]string // $N (1-based) to a name, from @name or -- param:
 	Embeds     []Embed        // "-- embed:" annotations, in order
 }
 
@@ -45,6 +45,11 @@ type Override struct {
 	Param  int    // $N parameter number; 0 when Column is set
 	GoType string // replacement Go type expression, may be empty
 	Null   string // "notnull", "nullable" or empty
+
+	// named is the "@name" an override was written against. Numbering is
+	// only known once the body has been read, so the target is resolved into
+	// Param at that point and this is left empty.
+	named string
 }
 
 // commands are the supported query kinds.
@@ -102,6 +107,10 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 		if cur.SQL == "" {
 			return fmt.Errorf("%s:%d: query %s has no SQL body",
 				cur.File, cur.Line, cur.Name)
+		}
+		if err := resolveNamed(cur); err != nil {
+			return fmt.Errorf("%s:%d: query %s: %w",
+				cur.File, cur.Line, cur.Name, err)
 		}
 		queries = append(queries, *cur)
 		cur = nil
@@ -188,23 +197,98 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 	return queries, nil
 }
 
-// parseOverride decodes "<column|$N> [gotype] [notnull|nullable]".
+// resolveNamed rewrites @name placeholders in the query body to $N and records
+// the names, so that everything downstream sees an ordinary positional query.
+//
+// The two styles do not mix within one query: naming the parameters is a way
+// of not counting them, and a query that does both would have the reader
+// counting anyway. An explicit "-- param:" annotation is the same conflict
+// from the other side - the names are already in the SQL.
+func resolveNamed(q *Query) error {
+	sql, names, err := rewriteNamed(q.SQL)
+	if err != nil {
+		return err
+	}
+	if len(names) == 0 {
+		for i, o := range q.Overrides {
+			if o.named != "" {
+				return fmt.Errorf(
+					"override names @%s, but the query has no @%s parameter",
+					o.named, o.named)
+			}
+			q.Overrides[i].named = ""
+		}
+		return nil
+	}
+
+	if len(q.ParamNames) > 0 {
+		return fmt.Errorf(
+			"query uses @name parameters, so \"-- param:\" annotations have " +
+				"nothing left to name")
+	}
+
+	// Everything is worked out before anything is written back, so a query
+	// that fails here is left exactly as it was read rather than half
+	// rewritten - a body still holding @name next to a map that says it does
+	// not would be a puzzle for whoever reads the error.
+	number := make(map[int]string, len(names))
+	byName := make(map[string]int, len(names))
+	for i, name := range names {
+		number[i+1] = name
+		byName[name] = i + 1
+	}
+
+	params := make([]int, len(q.Overrides))
+	for i, o := range q.Overrides {
+		if o.named == "" {
+			continue
+		}
+		n, ok := byName[o.named]
+		if !ok {
+			return fmt.Errorf(
+				"override names @%s, which the query does not use", o.named)
+		}
+		params[i] = n
+	}
+
+	for i, n := range params {
+		if n > 0 {
+			q.Overrides[i].Param = n
+			q.Overrides[i].named = ""
+		}
+	}
+	q.ParamNames = number
+	q.SQL = sql
+	return nil
+}
+
+// parseOverride decodes "<column|@name|$N> [gotype] [notnull|nullable]".
 func parseOverride(s string) (Override, error) {
 	fields := strings.Fields(s)
 	if len(fields) < 2 || len(fields) > 3 {
 		return Override{}, fmt.Errorf(
-			"override wants \"<column|$N> <go-type> [notnull|nullable]\", got %q", s)
+			"override wants \"<column|@name|$N> <go-type> [notnull|nullable]\", "+
+				"got %q", s)
 	}
 
 	var o Override
 	target := fields[0]
-	if strings.HasPrefix(target, "$") {
+	switch {
+	case strings.HasPrefix(target, "$"):
 		n, err := strconv.Atoi(target[1:])
 		if err != nil || n < 1 {
 			return Override{}, fmt.Errorf("bad parameter %q in override", target)
 		}
 		o.Param = n
-	} else {
+	case strings.HasPrefix(target, "@"):
+		// Resolved to a number once the body has been read; a named query is
+		// one where nobody should have to know what number this is.
+		name := target[1:]
+		if name == "" || !isNameStart(name[0]) {
+			return Override{}, fmt.Errorf("bad parameter %q in override", target)
+		}
+		o.named = name
+	default:
 		o.Column = target
 	}
 

@@ -141,6 +141,41 @@ argument is `argN`; give it a better name explicitly:
 -- param: $3 minimal_age
 ```
 
+### Named parameters
+
+A parameter may be written as `@name` instead of `$N`. The names are numbered
+by first appearance before the statement reaches the server, and the argument
+takes the name you wrote:
+
+```sql
+-- name: CreateArticle :one
+INSERT INTO articles (title, slug, body, author_id)
+VALUES (@title, @slug, @body, @author_id)
+RETURNING id;
+```
+
+Adding a column to that INSERT is one edit. With `$1..$26` it is an edit plus
+renumbering everything after it - and getting that wrong compiles cleanly and
+puts values in the wrong columns.
+
+A repeated name is one parameter, passed once and referred to as often as
+needed:
+
+```sql
+WHERE lower(title) = @q OR lower(slug) = @q
+```
+
+`@name` and `$N` do not mix inside one query, and a query using names has no
+use for `-- param:`; both are errors. An override can name the parameter too:
+
+```sql
+-- override: @tags []string
+```
+
+An `@` is only a parameter when a letter or underscore follows it. Operators
+(`@>`, `<@`, `@@`) and anything inside a string, a quoted identifier, a
+dollar-quoted body or a comment are left exactly as written.
+
 ## Commands
 
 | Command | Method shape |
@@ -174,7 +209,7 @@ types - adjust a single column or parameter in place:
 -- override: $3 *time.Time
 ```
 
-The form is `-- override: <column|$N> [go-type] [notnull|nullable]`. An
+The form is `-- override: <column|@name|$N> [go-type] [notnull|nullable]`. An
 explicit Go type is taken verbatim (its nullability included); a bare
 `notnull`/`nullable` keeps the mapped type and flips only the wrapping.
 An override that names a column or parameter the statement does not have is
