@@ -40,9 +40,12 @@ WHERE id = $1;
 
 -- name: CreateUser :one
 INSERT INTO users (email, name)
-VALUES ($1, $2)
+VALUES (@email, @name)
 RETURNING id, email, name, created_at;
 ```
+
+Parameters are `$1..$N` or, when a statement has enough of them that counting
+becomes the risk, `@name` - numbered for you, and named after what you wrote.
 
 Point pgc at your development database and generate:
 
@@ -72,8 +75,11 @@ Every parameter and result is typed from the live schema: `bigint` becomes
 resolves to its base type. When the full column set of a table is selected,
 the query returns the table's model struct; projections get their own row
 struct; a single column comes back as a bare value; a joined table can be
-nested with `-- embed:`. Optional extras: `json:"column"` tags and a
-`Querier` interface for test doubles.
+nested with `-- embed:`. Expressions that cannot produce NULL - `count(...)`,
+`coalesce(..., <literal>)` - come back as plain values rather than pointers.
+Optional extras: `json:"column"` tags, a `Querier` interface for test doubles,
+and `initialisms` for your domain's abbreviations, so `seo_title` becomes
+`SEOTitle` instead of `SeoTitle`.
 
 ## Commands
 
