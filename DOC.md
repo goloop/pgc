@@ -396,8 +396,11 @@ domain's own name takes precedence when you want something else.
   `nullable` overrides on the columns from the outer side. It warns rather
   than silently lying.
 
-  The warning **names the columns**: those that come from a table, that the
-  catalog calls NOT NULL, and that the query has not spoken for. Settle one
+  The warning **names the columns**: those from the table the join can
+  nullify, that the catalog calls NOT NULL, and that the query has not spoken
+  for. A `LEFT JOIN` names that table, so columns from the other side are left
+  alone; a `RIGHT` or `FULL` join nullifies a side it does not name, so there
+  every NOT NULL column is a candidate. Settle one
   with `nullable` or `notnull` and it drops off the list; settle them all and
   the warning stops. pgc cannot tell which side of the join a column came from
   without parsing the SQL, so it offers the candidates and lets you say.

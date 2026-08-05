@@ -217,6 +217,48 @@ func TestRunOuterJoin(t *testing.T) {
 	}
 }
 
+// TestRunOuterJoinNarrowsToTheJoinedTable checks the warning keeps to the side
+// the join can actually nullify. A LEFT JOIN names that table, so a column
+// from the other side is not a candidate and does not need an annotation to
+// say so.
+func TestRunOuterJoinNarrowsToTheJoinedTable(t *testing.T) {
+	// users is the inner side here; the joined table is one the fake catalog
+	// does not know, so nothing narrows and both columns stay candidates.
+	unknown := "SELECT u.id, u.email FROM users u LEFT JOIN nowhere n ON true"
+	dir := writeQueries(t, "-- name: Joined :many\n"+unknown+";\n")
+	db := &fakeDB{statements: map[string]*pgwire.Statement{
+		unknown: {Columns: []pgwire.Column{
+			usersCol(1, "id", 20), usersCol(2, "email", 25),
+		}},
+	}}
+	res, err := Run(db, testConfig(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Warnings) != 1 {
+		t.Fatalf("an unknown joined table should give the narrowing up: %v",
+			res.Warnings)
+	}
+
+	// Now the joined table is the one the columns come from, so they are the
+	// candidates - and covering them ends the warning.
+	known := "SELECT u.id, u.email FROM posts p LEFT JOIN users u ON true"
+	dir = writeQueries(t, "-- name: Joined :many\n"+known+";\n")
+	db = &fakeDB{statements: map[string]*pgwire.Statement{
+		known: {Columns: []pgwire.Column{
+			usersCol(1, "id", 20), usersCol(2, "email", 25),
+		}},
+	}}
+	res, err = Run(db, testConfig(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "email") {
+		t.Errorf("warnings = %v, want one naming the joined table's columns",
+			res.Warnings)
+	}
+}
+
 // TestRunOuterJoinIgnoresExpressions checks a column with no table behind it
 // is not offered as a candidate: the catalog never claimed it was NOT NULL.
 func TestRunOuterJoinIgnoresExpressions(t *testing.T) {

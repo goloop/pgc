@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-08-05
+
+### Fixed
+- The outer-join warning keeps to the side the join can actually nullify. It
+  listed every NOT NULL column of the result, including those from the inner
+  side that the join never touches, so silencing it meant writing `notnull` on
+  columns that were never at risk - the busywork the warning was meant to save.
+  A `LEFT JOIN` names the table it makes nullable, so that is the table its
+  columns are taken from. A `RIGHT` or `FULL` join, or a table the catalog does
+  not know, gives the narrowing up and lists everything, as before.
+
 ## [0.7.4] - 2026-08-05
 
 ### Fixed

@@ -212,9 +212,14 @@ func checkNameCollisions(in gen.Input) error {
 // reports NOT NULL, and that carry no override. A column the author has
 // spoken for - either way - is not one to be warned about again.
 func (c *compiler) unspokenColumns(q qfQuery, st *pgwire.Statement) []string {
+	outer := c.outerTables(q.SQL)
+
 	var out []string
 	for _, col := range st.Columns {
 		if col.TableOID == 0 || !c.cat.NotNull(col.TableOID, col.Attnum) {
+			continue
+		}
+		if outer != nil && !outer[col.TableOID] {
 			continue
 		}
 		if overrideForColumn(q, col.Name) != nil {
@@ -223,6 +228,36 @@ func (c *compiler) unspokenColumns(q qfQuery, st *pgwire.Statement) []string {
 		out = append(out, col.Name)
 	}
 	return out
+}
+
+// outerTables reports which tables a query's joins can fill with NULLs, or nil
+// when that cannot be narrowed down and every NOT NULL column is a candidate.
+//
+// A LEFT JOIN names the table it makes nullable, and that is the join people
+// write; reading the name off it keeps the warning to the columns actually at
+// risk, instead of asking for a "notnull" on every column of the inner side.
+// RIGHT and FULL nullify a side the join does not name, so their presence
+// gives the narrowing up rather than guessing at it - as does a table this
+// catalog has never heard of.
+func (c *compiler) outerTables(sql string) map[uint32]bool {
+	if rightOrFullRe.MatchString(sql) {
+		return nil
+	}
+
+	matches := leftJoinRe.FindAllStringSubmatch(sql, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	oids := map[uint32]bool{}
+	for _, m := range matches {
+		table, err := c.tableByName(m[1])
+		if err != nil {
+			return nil
+		}
+		oids[table.OID] = true
+	}
+	return oids
 }
 
 type compiler struct {
@@ -240,6 +275,16 @@ type compiler struct {
 }
 
 var outerJoinRe = regexp.MustCompile(`(?i)\b(left|right|full)\s+(outer\s+)?join\b`)
+
+// leftJoinRe captures the table a LEFT JOIN brings in - the side the join can
+// fill with NULLs. The name may be schema-qualified and may be followed by an
+// alias, which is not captured because only the table is looked up.
+var leftJoinRe = regexp.MustCompile(
+	`(?i)\bleft\s+(?:outer\s+)?join\s+([a-zA-Z_][\w$]*(?:\.[a-zA-Z_][\w$]*)?)`)
+
+// rightOrFullRe finds the join kinds whose nullable side is not the table the
+// join names: RIGHT nullifies what came before it, FULL nullifies both.
+var rightOrFullRe = regexp.MustCompile(`(?i)\b(right|full)\s+(outer\s+)?join\b`)
 
 // compileQuery resolves one query's parameters, result shape and doc.
 func (c *compiler) compileQuery(q qfQuery, st *pgwire.Statement) (gen.Query, error) {
