@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-08-05
+
+### Fixed
+- `pgc version` prints the real version again, and `pgc.lock.json` records it:
+  the constant had been left at `0.7.0` through the 0.7.1 release, so an
+  installed 0.7.1 reported itself as 0.7.0 and stamped that into every
+  snapshot it wrote.
+- `make dist` and `make release` now refuse to run while the constant and the
+  newest tag disagree. The constant has fallen behind twice; a check is worth
+  more than remembering.
+
 ## [0.7.1] - 2026-08-05
 
 ### Documentation

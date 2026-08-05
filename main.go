@@ -35,7 +35,7 @@ import (
 	"github.com/goloop/pgc/internal/snapshot"
 )
 
-const version = "0.7.0"
+const version = "0.7.2"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
