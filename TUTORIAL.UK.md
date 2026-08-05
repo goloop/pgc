@@ -414,6 +414,7 @@ internal/db/db.go
 internal/db/models.go
 internal/db/pgarray.go
 internal/db/notes.sql.go
+pgc.lock.json (4 queries, 1 table)
 ```
 
 Екскурсія:
@@ -433,6 +434,19 @@ internal/db/notes.sql.go
 `NOT NULL`, тож усі поля - звичайні значення; nullable `text` вийшов би
 `*string` (або `sql.Null[string]` з `"nullable": "sqlnull"`). Повна
 таблиця мапінгу - в [DOC.UK.md](DOC.UK.md#мапінг-типів).
+
+- **pgc.lock.json** - це не згенерований код, а те, що **сказав сервер**: типи
+  параметрів і колонок кожного запиту та зріз каталогу, якого вони торкаються.
+  Комітьте його. З ним у репозиторії `pgc generate` не потребує бази взагалі:
+
+  ```sh
+  unset PGC_DATABASE_URL
+  pgc generate          # ідентичний вихід, без сервера
+  ```
+
+  Саме це дає працювати свіжому клону, CI-джобі й docker-build без власного
+  PostgreSQL. Зміни запит без бази - і pgc відмовиться, назвавши запит: запис
+  робився для іншого SQL.
 
 Перезапускай `pgc generate` щоразу, як змінюється схема чи запити; файли
 перезаписуються детерміновано, тож `git diff` показує рівно те, що
@@ -593,21 +607,25 @@ go build ./...                          # 4. компілятор покаже �
 
 ## 13. Чесність у CI
 
-Дві команди не дають згенерованому коду і схемі розійтися:
+Більшості джоб база не потрібна: вони генерують із закоміченого
+`pgc.lock.json` і падають, якщо результат відрізняється від закоміченого.
 
 ```sh
-pgc check              # компілює кожен запит проти БД, нічого не пише
-pgc generate && git diff --exit-code   # падає, якщо закомічений код застарів
-```
-
-У CI підніми одноразовий PostgreSQL-сервіс і запінь версії - і pgc, і Go:
-
-```sh
-go install github.com/goloop/pgc@v0.3.0
-pgc migrate
+go install github.com/goloop/pgc@v0.7.0   # запінь pgc, і Go теж
 pgc generate
-git diff --exit-code
+git diff --exit-code   # падає, якщо закомічений код застарів
 ```
+
+Одна джоба має мати одноразовий PostgreSQL - щоб довести, що запис досі
+правдивий, інакше це лише запис про те, як було колись:
+
+```sh
+go install github.com/goloop/pgc@v0.7.0
+pgc migrate
+pgc verify             # падає, коли pgc.lock.json і схема розійшлись
+```
+
+`pgc check` - середина: компілює кожен запит і нічого не пише.
 
 Два паралельні CI-джоби не влаштують гонку міграцій: `pgc migrate` тримає
 advisory-лок PostgreSQL на весь запуск, тож другий джоб чекає.

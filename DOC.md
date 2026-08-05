@@ -11,6 +11,7 @@ First time here? Start with the step-by-step **[TUTORIAL.md](TUTORIAL.md)**.
 - [Mental model](#mental-model)
 - [Workflow](#workflow)
 - [Migrations](#migrations)
+- [Generating without a database](#generating-without-a-database)
 - [Query files](#query-files)
 - [Commands](#commands)
 - [Overrides](#overrides)
@@ -45,7 +46,8 @@ myapp/
 ├── queries/
 │   └── users.sql        annotated queries
 ├── internal/db/         generated package - do not edit
-└── pgc.json             optional configuration
+├── pgc.json             optional configuration
+└── pgc.lock.json        what the server said - commit it
 ```
 
 The cycle: `pgc migrate`, `pgc generate`, commit the result. The generated
@@ -114,6 +116,63 @@ VALUES ('001_init.sql', 'adopted');
 ```
 
 (The hash mismatch warning will remind you which files were adopted.)
+
+## Generating without a database
+
+Types come from a live PostgreSQL: every statement is prepared and described
+by the server, and there is no substitute for that. What there can be is a
+written record of the answers.
+
+`pgc generate` writes one, `pgc.lock.json`, beside the configuration. Commit
+it. When no database URL is set, generation reads it instead of connecting:
+
+```
+$ pgc generate                    # with PGC_DATABASE_URL: describes, records
+internal/db/db.go
+...
+pgc.lock.json (12 queries, 4 tables)
+
+$ unset PGC_DATABASE_URL
+$ pgc generate                    # no server anywhere in sight
+internal/db/db.go
+...
+```
+
+The output is identical either way. A fresh clone, a CI job and a container
+build stop needing a PostgreSQL of their own, and the file itself is the
+visible contract between the migrations, the `.sql` files and the generated Go.
+
+**The record is only used while it is still true.** Every query is recorded
+with a fingerprint of its SQL. Edit one and generate offline, and pgc refuses
+rather than generating against types that were read for a different statement:
+
+```
+$ pgc generate
+pgc: queries/articles.sql:7: CountArticles cannot be generated from
+pgc.lock.json: its SQL has changed since the snapshot. Run pgc generate with
+a database URL to rewrite the snapshot
+```
+
+The migration files are fingerprinted too. Those change without any query
+changing, so a difference there is a warning rather than a refusal - the
+schema may be exactly right, and nothing offline can tell.
+
+`pgc verify` is the other half, for CI with a database:
+
+```
+$ pgc verify
+ok: pgc.lock.json matches the database (12 queries, 4 tables)
+
+$ pgc verify                      # after someone forgot to regenerate
+  queries/articles.sql: CountArticles has different SQL
+  the migration files have changed since pgc.lock.json was written
+pgc: pgc.lock.json is out of date; run pgc generate against the database
+```
+
+It exits non-zero on any drift: a query the record has never seen, one that
+describes differently now, one that is in the record but no longer exists, or
+migrations written since. Run it in the job that has a database, and let every
+other job read the record.
 
 ## Query files
 
@@ -437,13 +496,23 @@ own implementation.
 
 ## CI recipe
 
+Most jobs need no database at all - they generate from the committed
+`pgc.lock.json`:
+
+```sh
+go install github.com/goloop/pgc@v0.7.0   # pin the tool (and pin Go in CI)
+pgc generate
+git diff --exit-code   # fails when the committed code drifted
+```
+
+One job should have a database, to prove the record is still true:
+
 ```sh
 docker run -d --name ci-pg -e POSTGRES_PASSWORD=ci -p 5432:5432 postgres:17-alpine
 export PGC_DATABASE_URL="postgres://postgres:ci@localhost:5432/postgres?sslmode=disable"
-go install github.com/goloop/pgc@v0.3.0   # pin the tool (and pin Go in CI)
+go install github.com/goloop/pgc@v0.7.0
 pgc migrate
-pgc generate
-git diff --exit-code   # fails when the committed code drifted
+pgc verify             # fails when pgc.lock.json and the schema disagree
 ```
 
 Pin both the pgc version and the Go toolchain version in CI, and install

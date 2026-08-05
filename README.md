@@ -80,6 +80,7 @@ nested with `-- embed:`. Optional extras: `json:"column"` tags and a
 ```
 pgc generate [-c pgc.json] [-d url]  compile the queries into a Go package
 pgc check    [-c pgc.json] [-d url]  compile without writing, for CI
+pgc verify   [-c pgc.json] [-d url]  check pgc.lock.json against the database
 pgc migrate  [-c pgc.json] [-d url]  apply pending migrations, in order
 pgc migrate status                   list applied and pending migrations
 pgc describe [-d url] "SELECT ..."   print parameter and column types
@@ -92,6 +93,13 @@ and a bookkeeping table, so the whole database lifecycle lives in one tool:
 `pgc migrate`, `pgc generate`, `pgc check`. In CI, `pgc check` plus
 `git diff --exit-code` catches queries that no longer match the schema and
 generated code that drifted from its sources.
+
+**Generating needs a database only once.** `pgc generate` records what the
+server said in `pgc.lock.json`; commit it, and every later run without a
+database URL generates the identical package from that record - a fresh clone,
+a CI job, a container build. The record is refused the moment a query stops
+matching it, and `pgc verify` reports drift in the one job that does have a
+database.
 
 ## Documentation
 

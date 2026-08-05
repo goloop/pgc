@@ -29,25 +29,27 @@ type Result struct {
 	Warnings []string
 }
 
-// Run compiles every query in cfg.Queries against the database behind db.
-func Run(db DB, cfg config.Config) (*Result, error) {
-	queries, err := queryfileParse(cfg.Queries)
-	if err != nil {
-		return nil, err
-	}
+// Described is one parsed query with what the server said about it.
+type Described struct {
+	Query     qfQuery
+	Statement *pgwire.Statement
+}
 
-	// Describe everything first, collecting the OIDs one catalog pass
-	// resolves.
-	type described struct {
-		q  qfQuery
-		st *pgwire.Statement
-	}
-	var ds []described
+// Queries reads and parses the .sql files of a run. It touches no database,
+// so both the live and the recorded paths start from the same list.
+func Queries(cfg config.Config) ([]qfQuery, error) {
+	return queryfileParse(cfg.Queries)
+}
+
+// Describe asks the server about every query and loads the slice of the
+// system catalogs they touch. This is the only step that needs a database.
+func Describe(db DB, queries []qfQuery) ([]Described, *catalog.Catalog, error) {
+	var ds []Described
 	var typeOIDs, tableOIDs []uint32
 	for _, q := range queries {
 		st, err := db.Describe(q.SQL)
 		if err != nil {
-			return nil, fmt.Errorf("%s:%d: %s: %w", q.File, q.Line, q.Name, err)
+			return nil, nil, fmt.Errorf("%s:%d: %s: %w", q.File, q.Line, q.Name, err)
 		}
 		typeOIDs = append(typeOIDs, st.ParamOIDs...)
 		for _, col := range st.Columns {
@@ -56,14 +58,33 @@ func Run(db DB, cfg config.Config) (*Result, error) {
 				tableOIDs = append(tableOIDs, col.TableOID)
 			}
 		}
-		ds = append(ds, described{q, st})
+		ds = append(ds, Described{q, st})
 	}
 
 	cat, err := catalog.Load(db, typeOIDs, tableOIDs)
 	if err != nil {
+		return nil, nil, err
+	}
+	return ds, cat, nil
+}
+
+// Run compiles every query in cfg.Queries against the database behind db.
+func Run(db DB, cfg config.Config) (*Result, error) {
+	queries, err := Queries(cfg)
+	if err != nil {
 		return nil, err
 	}
+	ds, cat, err := Describe(db, queries)
+	if err != nil {
+		return nil, err
+	}
+	return Build(cfg, ds, cat)
+}
 
+// Build renders the package from queries the server has already described.
+// The description may have come from a live connection or from a recorded
+// snapshot; from here on nothing can tell the difference.
+func Build(cfg config.Config, ds []Described, cat *catalog.Catalog) (*Result, error) {
 	c := &compiler{
 		cfg: cfg, cat: cat,
 		namer:       gen.NewNamer(cfg.Initialisms...),
@@ -78,11 +99,11 @@ func Run(db DB, cfg config.Config) (*Result, error) {
 	files := map[string]*gen.SrcFile{}
 	var fileOrder []string
 	for _, d := range ds {
-		gq, err := c.compileQuery(d.q, d.st)
+		gq, err := c.compileQuery(d.Query, d.Statement)
 		if err != nil {
 			return nil, err
 		}
-		key := d.q.File
+		key := d.Query.File
 		if files[key] == nil {
 			base := filepath.Base(key)
 			files[key] = &gen.SrcFile{

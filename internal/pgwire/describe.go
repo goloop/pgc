@@ -7,11 +7,11 @@ import "fmt"
 // column comes directly from a table; expressions have no origin and get
 // zeros.
 type Column struct {
-	Name     string
-	TypeOID  uint32
-	TableOID uint32
-	Attnum   int16
-	TypeMod  int32
+	Name     string `json:"name"`
+	TypeOID  uint32 `json:"type"`
+	TableOID uint32 `json:"table,omitempty"`
+	Attnum   int16  `json:"attnum,omitempty"`
+	TypeMod  int32  `json:"typemod,omitempty"`
 }
 
 // Statement is what the server knows about a parsed (never executed) query:

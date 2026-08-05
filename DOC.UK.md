@@ -11,6 +11,7 @@
 - [Ментальна модель](#ментальна-модель)
 - [Робочий процес](#робочий-процес)
 - [Міграції](#міграції)
+- [Генерація без бази](#генерація-без-бази)
 - [Query-файли](#query-файли)
 - [Команди](#команди)
 - [Overrides](#overrides)
@@ -46,7 +47,8 @@ myapp/
 ├── queries/
 │   └── users.sql        анотовані запити
 ├── internal/db/         згенерований пакет - не редагується
-└── pgc.json             необов'язкова конфігурація
+├── pgc.json             необов'язкова конфігурація
+└── pgc.lock.json        те, що сказав сервер - комітиться
 ```
 
 Цикл: `pgc migrate`, `pgc generate`, закомітити результат. Згенеровані
@@ -115,6 +117,63 @@ VALUES ('001_init.sql', 'adopted');
 
 (Попередження про hash-розбіжність нагадуватиме, які файли було
 прийнято.)
+
+## Генерація без бази
+
+Типи беруться з живого PostgreSQL: кожен стейтмент готує й описує сервер, і
+замінника цьому немає. Що можна мати - це **записану відповідь**.
+
+`pgc generate` пише її поруч із конфігурацією, у `pgc.lock.json`. Комітьте цей
+файл. Коли URL бази не заданий, генерація читає його замість того, щоб
+з'єднуватись:
+
+```
+$ pgc generate                    # з PGC_DATABASE_URL: описує й записує
+internal/db/db.go
+...
+pgc.lock.json (12 queries, 4 tables)
+
+$ unset PGC_DATABASE_URL
+$ pgc generate                    # жодного сервера поруч
+internal/db/db.go
+...
+```
+
+Вихід однаковий в обох випадках. Свіжий клон, CI-джоба й docker-build більше не
+потребують власного PostgreSQL, а сам файл стає видимим контрактом між
+міграціями, `.sql`-файлами і згенерованим Go.
+
+**Запис використовується лише поки він правдивий.** Кожен запит записаний із
+відбитком свого SQL. Змініть запит і згенеруйте офлайн - pgc відмовиться, а не
+згенерує за типами, які читалися для іншого стейтмента:
+
+```
+$ pgc generate
+pgc: queries/articles.sql:7: CountArticles cannot be generated from
+pgc.lock.json: its SQL has changed since the snapshot. Run pgc generate with
+a database URL to rewrite the snapshot
+```
+
+Файли міграцій теж мають відбиток. Вони змінюються без зміни жодного запиту,
+тож розбіжність там - це **попередження**, а не відмова: схема може бути
+цілком правильною, і офлайн цього ніяк не перевірити.
+
+`pgc verify` - друга половина, для CI з базою:
+
+```
+$ pgc verify
+ok: pgc.lock.json matches the database (12 queries, 4 tables)
+
+$ pgc verify                      # хтось забув перегенерувати
+  queries/articles.sql: CountArticles has different SQL
+  the migration files have changed since pgc.lock.json was written
+pgc: pgc.lock.json is out of date; run pgc generate against the database
+```
+
+Він виходить із ненульовим кодом на будь-якому дрейфі: запит, якого запис не
+бачив; запит, що тепер описується інакше; запит, що є в записі, але вже не
+існує; міграції, написані після. Запускайте його в тій джобі, що має базу, а
+решта нехай читають запис.
 
 ## Query-файли
 
@@ -435,13 +494,23 @@ q.WithTx(tx).DeleteUser(..) // *sql.Tx теж задовольняє
 
 ## Рецепт для CI
 
+Більшості джоб база взагалі не потрібна - вони генерують із закоміченого
+`pgc.lock.json`:
+
+```sh
+go install github.com/goloop/pgc@v0.7.0   # запінити інструмент (і Go в CI)
+pgc generate
+git diff --exit-code   # падає, коли закомічений код розійшовся
+```
+
+Одна джоба має мати базу - щоб довести, що запис досі правдивий:
+
 ```sh
 docker run -d --name ci-pg -e POSTGRES_PASSWORD=ci -p 5432:5432 postgres:17-alpine
 export PGC_DATABASE_URL="postgres://postgres:ci@localhost:5432/postgres?sslmode=disable"
-go install github.com/goloop/pgc@v0.3.0   # запінити інструмент (і Go в CI)
+go install github.com/goloop/pgc@v0.7.0
 pgc migrate
-pgc generate
-git diff --exit-code   # падає, коли закомічений код розійшовся
+pgc verify             # падає, коли pgc.lock.json і схема розійшлись
 ```
 
 Пінь у CI і версію pgc, і версію Go-тулчейну, і встановлюй один раз, а не

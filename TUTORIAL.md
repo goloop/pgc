@@ -414,6 +414,7 @@ internal/db/db.go
 internal/db/models.go
 internal/db/pgarray.go
 internal/db/notes.sql.go
+pgc.lock.json (4 queries, 1 table)
 ```
 
 The tour:
@@ -434,6 +435,20 @@ here is `NOT NULL`, so every field is a plain value; a nullable `text`
 column would come out as `*string` (or `sql.Null[string]` with
 `"nullable": "sqlnull"`). The full mapping table is in
 [DOC.md](DOC.md#type-mapping).
+
+- **pgc.lock.json** - not generated code, but what the server *said*: the
+  parameter and column types of every query, and the slice of the catalog they
+  touch. Commit it. With it in the repository, `pgc generate` needs no database
+  at all:
+
+  ```sh
+  unset PGC_DATABASE_URL
+  pgc generate          # identical output, no server
+  ```
+
+  That is what makes a fresh clone, a CI job and a container build work without
+  a PostgreSQL of their own. Edit a query without a database and pgc refuses,
+  naming the query: the record was taken for different SQL.
 
 Re-run `pgc generate` any time the schema or the queries change; the files
 are overwritten deterministically, so `git diff` shows exactly what the
@@ -593,22 +608,25 @@ site that no longer matches the schema is pointed out before anything runs.
 
 ## 13. Keep it honest in CI
 
-Two commands keep the generated code and the schema from drifting apart:
+Most jobs need no database: they generate from the committed `pgc.lock.json`
+and fail if the result differs from what was committed.
 
 ```sh
-pgc check              # compiles every query against the DB, writes nothing
-pgc generate && git diff --exit-code   # fails if committed code is stale
-```
-
-In CI, start a disposable PostgreSQL service and pin versions - both pgc's
-and Go's:
-
-```sh
-go install github.com/goloop/pgc@v0.3.0
-pgc migrate
+go install github.com/goloop/pgc@v0.7.0   # pin pgc, and pin Go too
 pgc generate
-git diff --exit-code
+git diff --exit-code   # fails if the committed code is stale
 ```
+
+One job should have a disposable PostgreSQL, to prove the record is still
+true - otherwise it is only a record of what used to be:
+
+```sh
+go install github.com/goloop/pgc@v0.7.0
+pgc migrate
+pgc verify             # fails when pgc.lock.json and the schema disagree
+```
+
+`pgc check` is the middle ground: it compiles every query and writes nothing.
 
 Two concurrent CI jobs cannot race the migrations: `pgc migrate` holds a
 PostgreSQL advisory lock for the whole run, so the second job waits.

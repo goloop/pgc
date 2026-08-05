@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-05
+
+### Added
+- **Generation no longer needs a database every time.** `pgc generate` records
+  what the server said about every query in `pgc.lock.json`, beside the
+  configuration; commit it, and a run with no database URL generates the
+  identical package from that record. A fresh clone, a CI job and a container
+  build stop needing a PostgreSQL of their own, and the file is the visible
+  contract between the migrations, the `.sql` files and the generated Go.
+
+  The record is only used while it is still true: every query carries a
+  fingerprint of its SQL, and one that has changed - or that the record has
+  never seen - is refused rather than generated from types read for a
+  different statement. The migration files are fingerprinted too; a change
+  there is a warning, since nothing offline can tell whether it matters.
+- `pgc verify` re-describes everything against a database and reports how
+  `pgc.lock.json` differs, exiting non-zero on any drift. It is the other half
+  of generating without one: run it in the CI job that has a database, and let
+  every other job read the record. It compares the recorded catalog as well as
+  the queries, so `ALTER TYPE ... ADD VALUE` is reported: every statement still
+  describes identically after it, while the generated constants, the values
+  list and the parser all change.
+- **Named parameters.** A query may write `@name` instead of `$N`; the names
+  are numbered by first appearance before the statement reaches the server,
+  and the generated argument takes the name written. A repeated `@name` is one
+  parameter. Adding a column to a 26-parameter `INSERT` was an edit plus
+  renumbering everything after it, and getting that wrong compiled cleanly and
+  put values in the wrong columns. `-- override:` accepts `@name` as well. The
+  two styles do not mix inside one query, and a query using names has no use
+  for `-- param:`; both are errors.
+- **Project initialisms.** `"initialisms": ["seo", "cdn"]` in `pgc.json` adds
+  to the built-in list, so `seo_title` becomes `SEOTitle` rather than
+  `SeoTitle`. The list only adds: a built-in cannot be removed, so the same
+  schema gives the same names in every project.
+
+### Changed
+- `ai` is a built-in initialism. A column named `ai_generated` now generates
+  `AIGenerated` where it was `AiGenerated`; rename the field at the call sites
+  that use it.
+- **A few expressions are no longer rendered as pointers.** `count(...)`,
+  `coalesce(..., <literal>)` and non-null literals with a cast to a built-in
+  type cannot produce NULL, so they come back as `int64` rather than `*int64`
+  and the `-- override: <name> notnull` they used to need can go. Everything
+  else - `max(...)`, `sum(...)`, `coalesce(a, b)` of two columns, arithmetic,
+  scalar subqueries - stays nullable, and the inference gives up for the whole
+  query when the output list cannot be lined up with the columns with
+  certainty (a `*`, a `UNION`, a `WITH`, a `DISTINCT ON`). A rule that is right
+  most of the time would be worse than none.
+
 ## [0.6.1] - 2026-08-05
 
 ### Fixed

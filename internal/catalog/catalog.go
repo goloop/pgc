@@ -21,28 +21,28 @@ type Querier interface {
 
 // Type is one pg_type row.
 type Type struct {
-	OID      uint32
-	Name     string // typname, e.g. int8, timestamptz
-	Kind     byte   // typtype: b base, e enum, d domain, ...
-	Category byte   // typcategory: A marks arrays
-	Elem     uint32 // element type OID for arrays, else 0
-	Base     uint32 // base type OID for domains, else 0
+	OID      uint32 `json:"oid"`
+	Name     string `json:"name"`           // typname, e.g. int8
+	Kind     byte   `json:"kind"`           // typtype: b base, e enum, d domain
+	Category byte   `json:"category"`       // typcategory: A marks arrays
+	Elem     uint32 `json:"elem,omitempty"` // element type OID for arrays
+	Base     uint32 `json:"base,omitempty"` // base type OID for domains
 }
 
 // Table is one pg_class relation with its live columns.
 type Table struct {
-	OID     uint32
-	Schema  string // namespace name, e.g. public
-	Name    string // relname
-	Columns []Column
+	OID     uint32   `json:"oid"`
+	Schema  string   `json:"schema"` // namespace name, e.g. public
+	Name    string   `json:"name"`   // relname
+	Columns []Column `json:"columns"`
 }
 
 // Column is one pg_attribute row of a table, in attnum order.
 type Column struct {
-	Name    string
-	Attnum  int16
-	TypeOID uint32
-	NotNull bool
+	Name    string `json:"name"`
+	Attnum  int16  `json:"attnum"`
+	TypeOID uint32 `json:"type"`
+	NotNull bool   `json:"notnull,omitempty"`
 }
 
 // Catalog is the loaded slice of the system catalogs that the given
@@ -310,4 +310,61 @@ func parseOID(v pgwire.Value) (uint32, error) {
 		return 0, fmt.Errorf("catalog: bad oid %q", v.S)
 	}
 	return uint32(n), nil
+}
+
+// Snapshot is everything a Catalog holds, in a form that can be written down
+// and read back. It exists so a generation run can work from a recorded
+// schema instead of a live server: the same values, no connection.
+type Snapshot struct {
+	Types  []Type              `json:"types"`
+	Tables []*Table            `json:"tables"`
+	Enums  map[string][]string `json:"enums"` // enum type OID to labels
+}
+
+// Snapshot returns the catalog's contents, ordered so that two runs against
+// the same schema produce byte-identical output and a diff shows only what
+// really changed.
+func (c *Catalog) Snapshot() Snapshot {
+	s := Snapshot{Enums: map[string][]string{}}
+
+	for _, t := range c.types {
+		s.Types = append(s.Types, t)
+	}
+	sort.Slice(s.Types, func(i, j int) bool { return s.Types[i].OID < s.Types[j].OID })
+
+	s.Tables = c.Tables()
+
+	for oid, labels := range c.enums {
+		s.Enums[strconv.FormatUint(uint64(oid), 10)] = labels
+	}
+	return s
+}
+
+// FromSnapshot rebuilds a Catalog from recorded contents.
+func FromSnapshot(s Snapshot) (*Catalog, error) {
+	c := &Catalog{
+		types:  map[uint32]Type{},
+		tables: map[uint32]*Table{},
+		enums:  map[uint32][]string{},
+	}
+	for _, t := range s.Types {
+		if _, dup := c.types[t.OID]; dup {
+			return nil, fmt.Errorf("catalog: type oid %d recorded twice", t.OID)
+		}
+		c.types[t.OID] = t
+	}
+	for _, t := range s.Tables {
+		if _, dup := c.tables[t.OID]; dup {
+			return nil, fmt.Errorf("catalog: table oid %d recorded twice", t.OID)
+		}
+		c.tables[t.OID] = t
+	}
+	for key, labels := range s.Enums {
+		oid, err := strconv.ParseUint(key, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("catalog: bad enum key %q: %w", key, err)
+		}
+		c.enums[uint32(oid)] = labels
+	}
+	return c, nil
 }
