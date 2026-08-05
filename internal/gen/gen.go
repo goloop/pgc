@@ -38,6 +38,11 @@ type Input struct {
 	// EmitInterface emits querier.go with a Querier interface that
 	// *Queries satisfies.
 	EmitInterface bool
+
+	// Namer spells database identifiers as Go ones, including any
+	// project-specific initialisms. Render substitutes the built-in set when
+	// this is nil, so every name in one package comes from one Namer.
+	Namer *Namer
 }
 
 // Enum is a PostgreSQL enum rendered as a named string type with one
@@ -79,21 +84,23 @@ type Field struct {
 	Embed []Field
 }
 
-// goName returns the Go field name.
-func (f Field) goName() string {
+// goName returns the Go field name. The Namer is required rather than
+// defaulted: a field named by the built-in initialisms while the rest of the
+// package used a project's own would be a name spelled two ways.
+func (f Field) goName(n *Namer) string {
 	if f.GoName != "" {
 		return f.GoName
 	}
-	return CamelCase(f.Name)
+	return n.CamelCase(f.Name)
 }
 
 // jsonTag returns the json tag for the field. A column keeps its source name;
 // an embedded struct is synthetic (it has no column), so its tag follows the
 // Go field name - the `as` alias when one is given - instead of the source
 // table name.
-func (f Field) jsonTag() string {
+func (f Field) jsonTag(n *Namer) string {
 	if f.Embed != nil {
-		return snakeCase(f.goName())
+		return snakeCase(f.goName(n))
 	}
 	return f.Name
 }
@@ -163,6 +170,12 @@ type OutFile struct {
 // source .sql file, each gofmt-formatted.
 func Render(in Input) ([]OutFile, error) {
 	var out []OutFile
+
+	// Settled once, here, so no emitter can fall back to a different set and
+	// spell the same column two ways.
+	if in.Namer == nil {
+		in.Namer = NewNamer()
+	}
 
 	add := func(name string, src string) error {
 		formatted, err := format.Source([]byte(src))
@@ -298,10 +311,11 @@ func emitModels(in Input) string {
 func emitStructFields(b *strings.Builder, in Input, fields []Field) {
 	for _, f := range fields {
 		if in.JSONTags {
-			fmt.Fprintf(b, "\t%s %s `json:%q`\n", f.goName(), f.Type, f.jsonTag())
+			fmt.Fprintf(b, "\t%s %s `json:%q`\n",
+				f.goName(in.Namer), f.Type, f.jsonTag(in.Namer))
 			continue
 		}
-		fmt.Fprintf(b, "\t%s %s\n", f.goName(), f.Type)
+		fmt.Fprintf(b, "\t%s %s\n", f.goName(in.Namer), f.Type)
 	}
 }
 
@@ -426,7 +440,7 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 		fmt.Fprintf(b, "\n// %sParams holds the arguments of %s.\n", q.Name, q.Name)
 		fmt.Fprintf(b, "type %sParams struct {\n", q.Name)
 		for _, p := range q.Params {
-			fmt.Fprintf(b, "\t%s %s\n", CamelCase(p.Name), p.Type)
+			fmt.Fprintf(b, "\t%s %s\n", in.Namer.CamelCase(p.Name), p.Type)
 		}
 		b.WriteString("}\n")
 	}
@@ -447,8 +461,8 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 	}
 	var argNames []string
 	for _, p := range q.Params {
-		argNames = append(argNames, paramName(p.Name))
-		taken[paramName(p.Name)] = true
+		argNames = append(argNames, in.Namer.paramName(p.Name))
+		taken[in.Namer.paramName(p.Name)] = true
 	}
 
 	// The argument list of the call site; array parameters ride their
@@ -462,7 +476,7 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 	var parts []string
 	for i, p := range q.Params {
 		if useParamsStruct {
-			parts = append(parts, wrap("arg."+CamelCase(p.Name), p))
+			parts = append(parts, wrap("arg."+in.Namer.CamelCase(p.Name), p))
 			continue
 		}
 		parts = append(parts, wrap(argNames[i], p))
@@ -494,7 +508,7 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 			q.Name, sig, q.Ret.Type)
 		fmt.Fprintf(b, "\trow := q.db.QueryRowContext(ctx, %s%s)\n", constName, callArgs)
 		fmt.Fprintf(b, "\tvar %s %s\n", itemVar, q.Ret.Type)
-		fmt.Fprintf(b, "\terr := row.Scan(%s)\n", scanArgs(itemVar, q.Ret))
+		fmt.Fprintf(b, "\terr := row.Scan(%s)\n", scanArgs(in.Namer, itemVar, q.Ret))
 		fmt.Fprintf(b, "\treturn %s, err\n}\n", itemVar)
 
 	case "many":
@@ -507,7 +521,7 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 		fmt.Fprintf(b, "\tvar %s []%s\n", sliceVar, q.Ret.Type)
 		b.WriteString("\tfor rows.Next() {\n")
 		fmt.Fprintf(b, "\t\tvar %s %s\n", itemVar, q.Ret.Type)
-		fmt.Fprintf(b, "\t\tif err := rows.Scan(%s); err != nil {\n", scanArgs(itemVar, q.Ret))
+		fmt.Fprintf(b, "\t\tif err := rows.Scan(%s); err != nil {\n", scanArgs(in.Namer, itemVar, q.Ret))
 		b.WriteString("\t\t\treturn nil, err\n\t\t}\n")
 		fmt.Fprintf(b, "\t\t%s = append(%s, %s)\n", sliceVar, sliceVar, itemVar)
 		b.WriteString("\t}\n")
@@ -526,7 +540,7 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 		b.WriteString("\t\tfor rows.Next() {\n")
 		fmt.Fprintf(b, "\t\t\tvar %s %s\n", itemVar, q.Ret.Type)
 		fmt.Fprintf(b, "\t\t\tif err := rows.Scan(%s); err != nil {\n",
-			scanArgs(itemVar, q.Ret))
+			scanArgs(in.Namer, itemVar, q.Ret))
 		fmt.Fprintf(b, "\t\t\t\tyield(%s, err)\n\t\t\t\treturn\n\t\t\t}\n", zeroVar)
 		fmt.Fprintf(b, "\t\t\tif !yield(%s, nil) {\n\t\t\t\treturn\n\t\t\t}\n", itemVar)
 		b.WriteString("\t\t}\n")
@@ -561,7 +575,7 @@ func signatureParams(params []Param, names []string, useStruct bool, queryName s
 
 // scanArgs renders the Scan argument list for a result shape. Array fields
 // scan through their adapter type; embedded structs expand one level.
-func scanArgs(varName string, ret Ret) string {
+func scanArgs(n *Namer, varName string, ret Ret) string {
 	if ret.Kind == RetScalar {
 		if ret.Helper != "" {
 			return "(*" + ret.Helper + ")(&" + varName + ")"
@@ -573,10 +587,10 @@ func scanArgs(varName string, ret Ret) string {
 	walk = func(prefix string, fields []Field) {
 		for _, f := range fields {
 			if f.Embed != nil {
-				walk(prefix+"."+f.goName(), f.Embed)
+				walk(prefix+"."+f.goName(n), f.Embed)
 				continue
 			}
-			target := "&" + prefix + "." + f.goName()
+			target := "&" + prefix + "." + f.goName(n)
 			if f.Helper != "" {
 				target = "(*" + f.Helper + ")(" + target + ")"
 			}

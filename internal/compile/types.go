@@ -298,11 +298,11 @@ func (c *compiler) enumFor(oid uint32, typname string) string {
 	if e, ok := c.enums[oid]; ok {
 		return e.Name
 	}
-	name := gen.CamelCase(typname)
+	name := c.namer.CamelCase(typname)
 	e := gen.Enum{Name: name, DBName: typname}
 	for _, label := range c.cat.EnumLabels(oid) {
 		e.Values = append(e.Values, gen.EnumValue{
-			Name:  name + gen.CamelCase(label),
+			Name:  name + c.namer.CamelCase(label),
 			Value: label,
 		})
 	}

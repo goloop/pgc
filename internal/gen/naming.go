@@ -7,13 +7,44 @@ import (
 )
 
 // acronyms are the initialisms spelled in full caps inside generated
-// identifiers, so user_api_id becomes UserAPIID, not UserApiId.
-var acronyms = map[string]bool{
-	"api": true, "css": true, "db": true, "dns": true, "html": true,
-	"http": true, "https": true, "id": true, "ip": true, "json": true,
-	"jwt": true, "sql": true, "ssl": true, "tls": true, "ttl": true,
-	"uid": true, "uri": true, "url": true, "utf8": true, "uuid": true,
-	"xml": true,
+// identifiers, so user_api_id becomes UserAPIID, not UserApiId. They are the
+// ones every Go codebase shares; anything domain-specific is a project's own
+// and belongs in its configuration.
+var acronyms = []string{
+	"ai", "api", "css", "db", "dns", "html", "http", "https", "id", "ip",
+	"json", "jwt", "sql", "ssl", "tls", "ttl", "uid", "uri", "url", "utf8",
+	"uuid", "xml",
+}
+
+// Namer turns database identifiers into Go ones. Every generated name comes
+// from one Namer, so a column cannot be spelled one way in a struct field and
+// another in the argument that fills it - two spellings of a name is code that
+// does not compile.
+//
+// The zero value is not usable; build one with NewNamer.
+type Namer struct {
+	initialisms map[string]bool
+}
+
+// NewNamer returns a Namer that spells the built-in initialisms in full caps,
+// plus any extra a project adds. Extra words are matched case-insensitively
+// against whole words of a database name: "seo" turns seo_title into SEOTitle,
+// but leaves seoul alone.
+//
+// The list only adds. A built-in cannot be removed: identifiers that differ
+// between projects with the same schema help nobody, and "id" spelled Id in
+// one package and ID in another is exactly the confusion this avoids.
+func NewNamer(extra ...string) *Namer {
+	set := make(map[string]bool, len(acronyms)+len(extra))
+	for _, w := range acronyms {
+		set[w] = true
+	}
+	for _, w := range extra {
+		if w = strings.ToLower(strings.TrimSpace(w)); w != "" {
+			set[w] = true
+		}
+	}
+	return &Namer{initialisms: set}
 }
 
 // CamelCase converts a snake_case database name to an exported Go
@@ -23,14 +54,14 @@ var acronyms = map[string]bool{
 // and a leading digit or an empty result is prefixed with X. PostgreSQL allows
 // quoted names that are not valid Go identifiers, so this keeps generation from
 // emitting code that will not compile.
-func CamelCase(s string) string {
+func (n *Namer) CamelCase(s string) string {
 	var b strings.Builder
 	for _, w := range splitWords(s) {
 		w = keepIdentRunes(w)
 		if w == "" {
 			continue
 		}
-		if acronyms[w] {
+		if n.initialisms[w] {
 			b.WriteString(strings.ToUpper(w))
 			continue
 		}
@@ -103,7 +134,7 @@ func snakeCase(s string) string {
 
 // lowerCamel converts a snake_case name to an unexported identifier:
 // user_id becomes userID, id stays id.
-func lowerCamel(s string) string {
+func (n *Namer) lowerCamel(s string) string {
 	var b strings.Builder
 	first := true
 	for _, w := range splitWords(s) {
@@ -116,7 +147,7 @@ func lowerCamel(s string) string {
 			first = false
 			continue
 		}
-		if acronyms[w] {
+		if n.initialisms[w] {
 			b.WriteString(strings.ToUpper(w))
 			continue
 		}
@@ -127,8 +158,8 @@ func lowerCamel(s string) string {
 
 // paramName turns a database-side name into a Go parameter name, keeping the
 // result compilable when the name collides with a Go keyword.
-func paramName(s string) string {
-	name := lowerCamel(s)
+func (n *Namer) paramName(s string) string {
+	name := n.lowerCamel(s)
 	if name == "" {
 		return "arg"
 	}

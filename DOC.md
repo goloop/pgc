@@ -238,6 +238,7 @@ usual. The same form works in the `types` map of the configuration.
   "nullable": "pointer",
   "json_tags": true,
   "interface": true,
+  "initialisms": ["seo", "cdn"],
   "types": {
     "uuid": "string",
     "numeric": "string"
@@ -259,6 +260,13 @@ usual. The same form works in the `types` map of the configuration.
   structs.
 - **interface** - emit `querier.go` with a `Querier` interface that
   `*Queries` satisfies, for callers that want a test double.
+- **initialisms** - abbreviations of your domain, spelled in full caps inside
+  generated identifiers: with `["seo"]`, `seo_title` becomes `SEOTitle` rather
+  than `SeoTitle`. They add to the built-in list (`api`, `id`, `json`, `url`,
+  `uuid`, `ai` and the rest of the ones every Go codebase shares); a built-in
+  cannot be removed, so the same schema gives the same names in every project.
+  Whole words only - `seo` does not touch `seoul` - and each entry must be a
+  single alphanumeric word, since identifiers are split on `_` before matching.
 - **types** - per-PostgreSQL-type Go replacements, applied before the
   nullability wrapping; values may use full import paths
   (`"uuid": "github.com/google/uuid.UUID"`).

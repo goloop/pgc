@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unicode"
 )
 
 // Config drives one pgc generate run. Every field has a sensible default,
@@ -42,6 +43,12 @@ type Config struct {
 	// the CamelCase of the table name is used as-is; pgc never guesses
 	// singular forms.
 	Rename map[string]string `json:"rename"`
+
+	// Initialisms are project-specific abbreviations spelled in full caps
+	// inside generated identifiers, e.g. ["seo", "cdn"] renders seo_title as
+	// SEOTitle. They add to the built-in list (api, id, json, url and the
+	// rest); a built-in cannot be removed.
+	Initialisms []string `json:"initialisms"`
 
 	// JSONTags adds `json:"column_name"` tags to model and row structs.
 	JSONTags bool `json:"json_tags"`
@@ -83,5 +90,28 @@ func Load(path string, explicit bool) (Config, error) {
 			"config: nullable must be \"pointer\" or \"sqlnull\", got %q",
 			cfg.Nullable)
 	}
+	for _, w := range cfg.Initialisms {
+		if !isWord(w) {
+			return Config{}, fmt.Errorf(
+				"config: initialism %q must be a single word of letters and "+
+					"digits; identifiers are split on \"_\", so only whole "+
+					"words can match", w)
+		}
+	}
 	return cfg, nil
+}
+
+// isWord reports whether s is one alphanumeric word. Generated identifiers are
+// split on underscores and punctuation, so anything else in the list could
+// never match a column and would sit in the file doing nothing.
+func isWord(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }

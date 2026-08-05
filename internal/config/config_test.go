@@ -55,3 +55,30 @@ func TestLoadErrors(t *testing.T) {
 		t.Error("want error for broken json")
 	}
 }
+
+// TestInitialisms covers the project-specific abbreviation list, including the
+// entries that could never match a column and would otherwise sit unused.
+func TestInitialisms(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) (Config, error) {
+		path := filepath.Join(dir, "pgc.json")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return Load(path, true)
+	}
+
+	cfg, err := write(`{"initialisms": ["seo", "cdn", "dm"]}`)
+	if err != nil {
+		t.Fatalf("Load = %v", err)
+	}
+	if len(cfg.Initialisms) != 3 || cfg.Initialisms[0] != "seo" {
+		t.Errorf("Initialisms = %v", cfg.Initialisms)
+	}
+
+	for _, bad := range []string{`["seo_title"]`, `["a-b"]`, `[""]`, `["x y"]`} {
+		if _, err := write(`{"initialisms": ` + bad + `}`); err == nil {
+			t.Errorf("initialisms %s was accepted", bad)
+		}
+	}
+}

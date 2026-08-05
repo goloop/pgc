@@ -66,6 +66,7 @@ func Run(db DB, cfg config.Config) (*Result, error) {
 
 	c := &compiler{
 		cfg: cfg, cat: cat,
+		namer:       gen.NewNamer(cfg.Initialisms...),
 		models:      map[uint32]gen.Model{},
 		enums:       map[uint32]gen.Enum{},
 		helpers:     map[string]bool{},
@@ -95,6 +96,7 @@ func Run(db DB, cfg config.Config) (*Result, error) {
 
 	in := gen.Input{
 		Package:       cfg.Package,
+		Namer:         c.namer,
 		TypeImports:   c.typeImports,
 		ImportAliases: c.importAlias,
 		JSONTags:      cfg.JSONTags,
@@ -186,6 +188,7 @@ func checkNameCollisions(in gen.Input) error {
 type compiler struct {
 	cfg         config.Config
 	cat         *catalog.Catalog
+	namer       *gen.Namer           // the one speller of every generated identifier
 	models      map[uint32]gen.Model // tables emitted as model structs
 	enums       map[uint32]gen.Enum  // enum types emitted alongside models
 	helpers     map[string]bool      // array adapters in use
@@ -336,7 +339,7 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 			return gen.Ret{}, fmt.Errorf(
 				"a result column has no name; give it one with AS")
 		}
-		if err := addName(gen.CamelCase(col.Name)); err != nil {
+		if err := addName(c.namer.CamelCase(col.Name)); err != nil {
 			return gen.Ret{}, err
 		}
 		expr, helper, err := c.columnType(q, col)
@@ -446,7 +449,7 @@ func (c *compiler) modelFor(table *catalog.Table) (gen.Model, error) {
 		name = c.cfg.Rename[table.Name]
 	}
 	if name == "" {
-		name = gen.CamelCase(table.Name)
+		name = c.namer.CamelCase(table.Name)
 	}
 	display := table.Name
 	if table.Schema != "public" {

@@ -58,7 +58,7 @@ type Querier interface {
 		}
 		b.WriteString(indentComment(wrapComment(q.Doc)))
 		fmt.Fprintf(&b, "\t%s(ctx context.Context%s) %s\n",
-			q.Name, querierParams(q), resultOf(q))
+			q.Name, querierParams(in.Namer, q), resultOf(q))
 	}
 	b.WriteString("}\n\nvar _ Querier = (*Queries)(nil)\n")
 	return b.String()
@@ -66,10 +66,10 @@ type Querier interface {
 
 // querierParams renders a query's parameter list after ctx, matching the
 // generated method exactly.
-func querierParams(q Query) string {
+func querierParams(n *Namer, q Query) string {
 	var names []string
 	for _, p := range q.Params {
-		names = append(names, paramName(p.Name))
+		names = append(names, n.paramName(p.Name))
 	}
 	return signatureParams(q.Params, names, q.UsesParamStruct(), q.Name)
 }
