@@ -21,8 +21,17 @@ func emitQuerier(in Input) string {
 			// Only what the signatures spell out matters here: parameter
 			// types and scalar results. Row and model structs appear by
 			// name alone - their field types must not drag imports in.
-			for _, p := range q.Params {
-				types = append(types, p.Type)
+			//
+			// Past four parameters the signature collapses to an
+			// XxxParams struct, so the individual types stop appearing
+			// and must not be counted either - otherwise a query with,
+			// say, a json.RawMessage parameter imports encoding/json
+			// into a file that never spells it out, and the generated
+			// package does not compile.
+			if !usesParamStruct(q) {
+				for _, p := range q.Params {
+					types = append(types, p.Type)
+				}
 			}
 			if q.Ret.Kind == RetScalar {
 				types = append(types, q.Ret.Type)
@@ -62,8 +71,13 @@ func querierParams(q Query) string {
 	for _, p := range q.Params {
 		names = append(names, paramName(p.Name))
 	}
-	return signatureParams(q.Params, names, len(q.Params) >= 4, q.Name)
+	return signatureParams(q.Params, names, usesParamStruct(q), q.Name)
 }
+
+// usesParamStruct reports whether a query's parameters are passed as an
+// XxxParams struct rather than spelled out one by one. The threshold lives
+// here so the signature and the import list can never disagree about it.
+func usesParamStruct(q Query) bool { return len(q.Params) >= 4 }
 
 // resultOf renders a query's result list.
 func resultOf(q Query) string {

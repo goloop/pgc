@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-08-05
+
+### Fixed
+- The generated `querier.go` no longer imports `encoding/json`, `time` or any
+  other type-driven import for a query whose parameters collapse into an
+  `XxxParams` struct. Past four parameters the interface signature spells out
+  the struct name, not the individual types, so collecting those types for the
+  import list produced an import the file never used and a generated package
+  that did not compile. Within `querier.go` the four-parameter threshold now
+  lives in a single place, `usesParamStruct`, so the signature and the import
+  list cannot disagree about it.
+- `pgc version` prints the real version again: the constant had been left at
+  `0.5.1` through the 0.6.0 release.
+
 ## [0.6.0] - 2026-07-12
 
 ### Security

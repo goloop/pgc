@@ -153,6 +153,59 @@ func TestRowStructAndParamsStruct(t *testing.T) {
 	}
 }
 
+// TestQuerierImportsOnlyWhatItSpells checks that querier.go imports nothing
+// on account of parameters that the interface never spells out. Past four
+// parameters the signature is an XxxParams struct, so a json.RawMessage or a
+// time.Time parameter must not pull encoding/json or time into a file that
+// mentions neither - the generated package would not compile.
+func TestQuerierImportsOnlyWhatItSpells(t *testing.T) {
+	in := Input{
+		Package:       "db",
+		EmitInterface: true,
+		Files: []SrcFile{{
+			Source: "queries/docs.sql",
+			Out:    "docs.sql.go",
+			Queries: []Query{{
+				Name:    "UpsertDoc",
+				Doc:     "UpsertDoc stores a document.",
+				Command: "exec",
+				SQL:     "INSERT INTO docs (id, body, at, tag) VALUES ($1, $2, $3, $4)",
+				Params: []Param{
+					{Name: "id", Type: "int64"},
+					{Name: "body", Type: "json.RawMessage"},
+					{Name: "at", Type: "time.Time"},
+					{Name: "tag", Type: "string"},
+				},
+				Ret: Ret{Kind: RetNone},
+			}},
+		}},
+	}
+	files, err := Render(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var querier string
+	for _, f := range files {
+		if f.Name == "querier.go" {
+			querier = string(f.Data)
+		}
+	}
+	if querier == "" {
+		t.Fatal("no querier.go rendered")
+	}
+	if !strings.Contains(querier,
+		"UpsertDoc(ctx context.Context, arg UpsertDocParams) error") {
+		t.Errorf("unexpected signature in:\n%s", querier)
+	}
+	for _, unwanted := range []string{"encoding/json", "\"time\""} {
+		if strings.Contains(querier, unwanted) {
+			t.Errorf("querier.go imports %s but never spells it out:\n%s",
+				unwanted, querier)
+		}
+	}
+}
+
 func TestSnakeCase(t *testing.T) {
 	cases := map[string]string{
 		"Author":        "author",
