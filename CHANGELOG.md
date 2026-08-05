@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] - 2026-08-05
+
+### Fixed
+- The outer-join warning no longer goes quiet at the first override, which is
+  what 0.7.3 made it do. One `nullable` on one column says nothing about the
+  others from the outer side, so a query where the author had covered some and
+  missed one - the likeliest mistake of the three - lost the only signal that
+  the catalog was lying about it. The result is a NULL scanned into a value
+  that cannot hold one, at run time.
+
+### Changed
+- The warning now names the columns it is about: those that come from a table,
+  that the catalog reports NOT NULL, and that the query has not spoken for.
+  Settling one with `nullable` or `notnull` drops it from the list, and
+  settling them all stops the warning - so it goes quiet by being answered
+  rather than by being partially acknowledged. This is what 0.7.3 was reaching
+  for; naming the columns is what makes it safe to do.
+
 ## [0.7.3] - 2026-08-05
 
 ### Fixed

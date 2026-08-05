@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/goloop/pgc/internal/catalog"
 	"github.com/goloop/pgc/internal/config"
@@ -206,6 +207,24 @@ func checkNameCollisions(in gen.Input) error {
 	return nil
 }
 
+// unspokenColumns lists the result columns an outer join could turn NULL that
+// the query has not settled: those that come from a table, that the catalog
+// reports NOT NULL, and that carry no override. A column the author has
+// spoken for - either way - is not one to be warned about again.
+func (c *compiler) unspokenColumns(q qfQuery, st *pgwire.Statement) []string {
+	var out []string
+	for _, col := range st.Columns {
+		if col.TableOID == 0 || !c.cat.NotNull(col.TableOID, col.Attnum) {
+			continue
+		}
+		if overrideForColumn(q, col.Name) != nil {
+			continue
+		}
+		out = append(out, col.Name)
+	}
+	return out
+}
+
 type compiler struct {
 	cfg         config.Config
 	cat         *catalog.Catalog
@@ -252,15 +271,26 @@ func (c *compiler) compileQuery(q qfQuery, st *pgwire.Statement) (gen.Query, err
 		}
 	}
 
-	// Only worth saying to an author who has not thought about it. A query
-	// whose nullability is already spelled out column by column gets the
-	// warning right too, and repeating it there teaches everyone to skip
-	// warnings - including the ones on the queries that do need them.
-	if outerJoinRe.MatchString(q.SQL) && !statesNullability(q) {
-		c.warnings = append(c.warnings, fmt.Sprintf(
-			"%s:%d: %s uses an outer join; the catalog cannot see which side "+
-				"is nullable - add \"-- override: <column> nullable\" for columns "+
-				"from the outer side", q.File, q.Line, q.Name))
+	// An outer join makes the catalog wrong: it reports the joined table's
+	// columns as NOT NULL while the join can make them NULL. Which columns
+	// come from the outer side cannot be known without parsing the SQL, so
+	// the warning lists the ones that could be - table columns the catalog
+	// calls NOT NULL that the query has not spoken for - and goes quiet when
+	// there are none left.
+	//
+	// Naming them is what makes it act on: a warning that repeats on a query
+	// already dealt with teaches the reader to skip warnings, and one that
+	// stops at the first override goes quiet on the half-finished query,
+	// which is where the mistake actually lives.
+	if outerJoinRe.MatchString(q.SQL) {
+		if unspoken := c.unspokenColumns(q, st); len(unspoken) > 0 {
+			c.warnings = append(c.warnings, fmt.Sprintf(
+				"%s:%d: %s uses an outer join, which can make a NOT NULL "+
+					"column NULL; the catalog cannot see which side is outer. "+
+					"Add \"-- override: <column> nullable\" for those from it, "+
+					"or \"notnull\" to say they are safe: %s",
+				q.File, q.Line, q.Name, strings.Join(unspoken, ", ")))
+		}
 	}
 
 	return gen.Query{

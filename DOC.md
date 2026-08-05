@@ -396,12 +396,15 @@ domain's own name takes precedence when you want something else.
   `nullable` overrides on the columns from the outer side. It warns rather
   than silently lying.
 
-  The warning stops once the query states nullability for any of its result
-  columns - one `-- override: <column> nullable` or `notnull` is enough. It is
-  a prompt to think about the outer side, not a per-column check: pgc cannot
-  tell which columns came from it without parsing the SQL. Once you have
-  written the nullability down, repeating the warning on every run would only
-  teach you to scroll past it, and past the queries that still need it.
+  The warning **names the columns**: those that come from a table, that the
+  catalog calls NOT NULL, and that the query has not spoken for. Settle one
+  with `nullable` or `notnull` and it drops off the list; settle them all and
+  the warning stops. pgc cannot tell which side of the join a column came from
+  without parsing the SQL, so it offers the candidates and lets you say.
+
+  It does not go quiet at the first override. A query where some columns are
+  covered and some are not is exactly where the remaining mistake is, and that
+  is the last place a warning should fall silent.
 
 ## Enums
 

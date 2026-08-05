@@ -140,34 +140,93 @@ func TestRunFullPipeline(t *testing.T) {
 	}
 }
 
-func TestRunOuterJoinWarning(t *testing.T) {
+// TestRunOuterJoin covers the whole of the warning, and the middle case is the
+// point of it: a query where the author covered some columns and not others is
+// where the mistake actually lives, so that is the last place the warning may
+// go quiet.
+func TestRunOuterJoin(t *testing.T) {
 	sql := "SELECT u.id, u.email FROM users u LEFT JOIN users x ON true"
-	dir := writeQueries(t, "-- name: Joined :many\n"+sql+";\n")
 
-	db := &fakeDB{statements: map[string]*pgwire.Statement{
-		sql: {Columns: []pgwire.Column{
-			usersCol(1, "id", 20), usersCol(2, "email", 25),
-		}},
-	}}
-	res, err := Run(db, testConfig(dir))
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name       string
+		annotation string
+		want       []string // column names the warning must list
+	}{
+		{
+			name: "nothing said: both columns are candidates",
+			want: []string{"id", "email"},
+		},
+		{
+			name:       "half said: the other half is still named",
+			annotation: "-- override: email nullable\n",
+			want:       []string{"id"},
+		},
+		{
+			name: "all said: nothing left to warn about",
+			annotation: "-- override: email nullable\n" +
+				"-- override: id notnull\n",
+			want: nil,
+		},
+		{
+			name:       "a type override speaks for its column too",
+			annotation: "-- override: email *string\n-- override: id int64\n",
+			want:       nil,
+		},
 	}
-	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "outer join") {
-		t.Errorf("warnings = %v", res.Warnings)
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := writeQueries(t,
+				"-- name: Joined :many\n"+c.annotation+sql+";\n")
+			db := &fakeDB{statements: map[string]*pgwire.Statement{
+				sql: {Columns: []pgwire.Column{
+					usersCol(1, "id", 20), usersCol(2, "email", 25),
+				}},
+			}}
+
+			res, err := Run(db, testConfig(dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if len(c.want) == 0 {
+				if len(res.Warnings) != 0 {
+					t.Fatalf("warnings = %v, want none", res.Warnings)
+				}
+				return
+			}
+			if len(res.Warnings) != 1 {
+				t.Fatalf("warnings = %v, want one", res.Warnings)
+			}
+			w := res.Warnings[0]
+			if !strings.Contains(w, "outer join") {
+				t.Errorf("warning does not say what it is about: %s", w)
+			}
+			for _, col := range c.want {
+				if !strings.Contains(w, col) {
+					t.Errorf("warning does not name %q: %s", col, w)
+				}
+			}
+			for _, col := range []string{"id", "email"} {
+				if !contains(c.want, col) && strings.Contains(w, " "+col) {
+					t.Errorf("warning names %q, which the query spoke for: %s",
+						col, w)
+				}
+			}
+		})
 	}
 }
 
-// An author who has already written the nullability down has done the thing
-// the warning asks for; saying it anyway is how warnings become noise.
-func TestRunOuterJoinSilentWhenStated(t *testing.T) {
-	sql := "SELECT u.id, u.email FROM users u LEFT JOIN users x ON true"
-	dir := writeQueries(t,
-		"-- name: Joined :many\n-- override: email nullable\n"+sql+";\n")
+// TestRunOuterJoinIgnoresExpressions checks a column with no table behind it
+// is not offered as a candidate: the catalog never claimed it was NOT NULL.
+func TestRunOuterJoinIgnoresExpressions(t *testing.T) {
+	sql := "SELECT u.id, count(*) AS n FROM users u LEFT JOIN users x ON true"
+	dir := writeQueries(t, "-- name: Joined :many\n-- override: id nullable\n"+
+		sql+";\n")
 
 	db := &fakeDB{statements: map[string]*pgwire.Statement{
 		sql: {Columns: []pgwire.Column{
-			usersCol(1, "id", 20), usersCol(2, "email", 25),
+			usersCol(1, "id", 20), {Name: "n", TypeOID: 20},
 		}},
 	}}
 	res, err := Run(db, testConfig(dir))
@@ -177,6 +236,15 @@ func TestRunOuterJoinSilentWhenStated(t *testing.T) {
 	if len(res.Warnings) != 0 {
 		t.Errorf("warnings = %v, want none", res.Warnings)
 	}
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunErrors(t *testing.T) {
