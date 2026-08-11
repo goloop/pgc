@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-08-11
+
+Minor release: a nullable `json`/`jsonb` column now survives a SQL NULL.
+
+### Fixed
+- A nullable `json` or `jsonb` column is wrapped like any other nullable type,
+  so `pointer` mode emits `*json.RawMessage` and `sqlnull` mode emits
+  `sql.Null[json.RawMessage]`. Until now it was emitted bare, on the assumption
+  that `json.RawMessage` encodes NULL by itself the way a nil slice does. It
+  does not: `database/sql` recognises `*[]byte` by exact type, and
+  `json.RawMessage` is a named type, so scanning a NULL failed at run time on a
+  perfectly valid row. The workaround that finding this forces -
+  `COALESCE(col, 'null'::jsonb)` - also erases the difference between "no value"
+  and "the value is JSON null", which the database was keeping.
+
+### Changed
+- **Regenerating changes the type of nullable json/jsonb fields.** That is
+  visible at compile time, and it is the point: the previous type could not
+  hold what the column can contain. Code that worked around this with COALESCE
+  can drop it. `NOT NULL` columns and `-- override: ... notnull` are untouched.
+
 ## [0.7.5] - 2026-08-05
 
 ### Fixed

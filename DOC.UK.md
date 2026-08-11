@@ -348,7 +348,7 @@ Go-тип з іншого модуля записується повним impor
 | text, varchar, char, name, citext | string | *string |
 | bytea | []byte | []byte (nil = NULL) |
 | date, timestamp, timestamptz | time.Time | *time.Time |
-| json, jsonb | json.RawMessage | json.RawMessage (nil = NULL) |
+| json, jsonb | json.RawMessage | *json.RawMessage |
 | uuid, numeric, money | string | *string |
 | time, timetz, interval | string | *string |
 | inet, cidr, macaddr | string | *string |

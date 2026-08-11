@@ -312,10 +312,14 @@ func (c *compiler) enumFor(oid uint32, typname string) string {
 
 // inherentlyNullable reports whether an expression already encodes NULL on
 // its own (nil slice or explicit pointer), so no extra wrapping is needed.
+//
+// json.RawMessage looks like it belongs here and does not: database/sql
+// recognises *[]byte by exact type, and RawMessage is a named type, so a NULL
+// scanned into a bare RawMessage fails at run time on a perfectly valid row.
+// A nullable json column therefore gets the same wrapping as any other type.
 func inherentlyNullable(expr string) bool {
 	return strings.HasPrefix(expr, "*") ||
 		strings.HasPrefix(expr, "[]") ||
-		expr == "json.RawMessage" ||
 		strings.HasPrefix(expr, "sql.Null")
 }
 

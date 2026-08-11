@@ -348,7 +348,7 @@ usual. The same form works in the `types` map of the configuration.
 | text, varchar, char, name, citext | string | *string |
 | bytea | []byte | []byte (nil is NULL) |
 | date, timestamp, timestamptz | time.Time | *time.Time |
-| json, jsonb | json.RawMessage | json.RawMessage (nil is NULL) |
+| json, jsonb | json.RawMessage | *json.RawMessage |
 | uuid, numeric, money | string | *string |
 | time, timetz, interval | string | *string |
 | inet, cidr, macaddr | string | *string |
