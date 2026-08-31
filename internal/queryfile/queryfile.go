@@ -101,6 +101,13 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 		if cur == nil {
 			return nil
 		}
+		// A statement runs to its terminator. Anything after it — the blank line
+		// and prose comment that often sit between one query and the next header
+		// — is not part of the statement, but the body loop appended it because
+		// it comes before the next "-- name:". Drop those trailing standalone
+		// comment and blank lines so they do not ride inside the prepared
+		// statement. (A comment sharing a line with SQL keeps that SQL line.)
+		cur.SQL = dropTrailingComments(cur.SQL)
 		cur.SQL = strings.TrimSpace(cur.SQL)
 		cur.SQL = strings.TrimSuffix(cur.SQL, ";")
 		cur.SQL = strings.TrimRight(cur.SQL, " \t\n")
@@ -195,6 +202,24 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 		return nil, fmt.Errorf("%s: no \"-- name:\" queries found", path)
 	}
 	return queries, nil
+}
+
+// dropTrailingComments removes whole trailing lines that are blank or a
+// standalone SQL line comment (`-- ...`). It stops at the first line carrying
+// actual SQL, so a comment on the same line as SQL is left untouched — only the
+// prose that trails a finished statement, before the next query, is removed.
+func dropTrailingComments(sql string) string {
+	lines := strings.Split(sql, "\n")
+	end := len(lines)
+	for end > 0 {
+		t := strings.TrimSpace(lines[end-1])
+		if t == "" || strings.HasPrefix(t, "--") {
+			end--
+			continue
+		}
+		break
+	}
+	return strings.Join(lines[:end], "\n")
 }
 
 // resolveNamed rewrites @name placeholders in the query body to $N and records
