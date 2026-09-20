@@ -157,7 +157,9 @@ func (n *Namer) lowerCamel(s string) string {
 }
 
 // paramName turns a database-side name into a Go parameter name, keeping the
-// result compilable when the name collides with a Go keyword.
+// result compilable when the name collides with a Go keyword or with an
+// identifier the generated method body already uses (the receiver q, ctx,
+// row, rows, res, err, arg).
 func (n *Namer) paramName(s string) string {
 	name := n.lowerCamel(s)
 	if name == "" {
@@ -167,10 +169,18 @@ func (n *Namer) paramName(s string) string {
 	if r, _ := utf8.DecodeRuneInString(name); !unicode.IsLetter(r) && r != '_' {
 		name = "x" + name
 	}
-	if goKeywords[name] {
+	if goKeywords[name] || bodyIdents[name] {
 		return name + "_"
 	}
 	return name
+}
+
+// bodyIdents are the identifiers every generated method declares itself; a
+// parameter with one of these names would shadow the receiver or fail to
+// compile ("q redeclared in this block"), so it gets a trailing underscore.
+var bodyIdents = map[string]bool{
+	"q": true, "ctx": true, "row": true, "rows": true, "res": true,
+	"err": true, "arg": true,
 }
 
 // lowerFirst lowers the first letter of an already-camel identifier:

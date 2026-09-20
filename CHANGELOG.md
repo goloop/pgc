@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-09-20
+
+Patch release: a parameter named like the generated method body compiles.
+
+### Fixed
+- A query parameter named `q`, `ctx`, `row`, `rows`, `res`, `err` or `arg`
+  used to shadow the receiver or a local of the generated method
+  (`func (q *Queries) F(ctx context.Context, q *string)` — "q redeclared in
+  this block"). Such a parameter now gets a trailing underscore, the same way
+  a Go keyword does.
+
 ## [0.8.0] - 2026-08-11
 
 Minor release: a nullable `json`/`jsonb` column now survives a SQL NULL.

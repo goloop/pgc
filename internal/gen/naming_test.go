@@ -33,6 +33,21 @@ func TestCamelCaseAlwaysValidIdentifier(t *testing.T) {
 	}
 }
 
+// A parameter named like the receiver or a local of the generated body
+// ("q", "ctx", "rows") must not shadow it: `func (q *Queries) F(ctx, q *string)`
+// does not compile.
+func TestParamNameBodyIdentifier(t *testing.T) {
+	n := NewNamer()
+	for _, in := range []string{"q", "ctx", "row", "rows", "res", "err", "arg"} {
+		if got := n.paramName(in); got != in+"_" {
+			t.Errorf("paramName(%q) = %q, want %q", in, got, in+"_")
+		}
+	}
+	if got := n.paramName("query"); got != "query" {
+		t.Errorf("paramName(query) = %q, want query (not reserved)", got)
+	}
+}
+
 // paramName must not produce an identifier that starts with a digit.
 func TestParamNameLeadingDigit(t *testing.T) {
 	got := NewNamer().paramName("2fa_code")
