@@ -21,11 +21,14 @@ import (
 	"flag"
 	"fmt"
 	iofs "io/fs"
+	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/goloop/pgc/internal/catalog"
@@ -98,8 +101,15 @@ Usage:
   pgc generate [-c pgc.json] [-d url]  compile the queries into a Go package
   pgc check    [-c pgc.json] [-d url]  compile without writing, for CI
   pgc verify   [-c pgc.json] [-d url]  check pgc.lock.json against the database
-  pgc migrate  [-c pgc.json] [-d url]  apply pending migrations, in order
-  pgc migrate status                   list applied and pending migrations
+  pgc migrate  [up] [-c pgc.json] [-d url] [-allow-drift]
+               [-lock-timeout 10m] [-timeout 0]
+                                       apply pending migrations, in order
+  pgc migrate status                   list every migration's state; fails
+                                       when one needs attention
+  pgc migrate resolve <file> applied|retry
+                                       settle an unfinished no-transaction file
+  pgc migrate baseline <last-file>     record files up to <last-file> as
+                                       applied, for an existing schema
   pgc describe [-d url] "SELECT ..."   print parameter and column types
   pgc version                          print the version
 
@@ -271,60 +281,115 @@ func loadConfig(fs *flag.FlagSet, path string) (config.Config, error) {
 	return config.Load(path, explicit)
 }
 
-// migrateCmd applies pending migrations or reports their status.
+// migrateCmd dispatches the migrate subcommands. Every argument is checked
+// before a connection is opened: an unknown word or a misplaced one must never
+// fall through to applying migrations.
 func migrateCmd(args []string) error {
-	status := false
-	if len(args) > 0 && args[0] == "status" {
-		status = true
-		args = args[1:]
-	}
-
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	cfgPath := fs.String("c", "pgc.json", "config file")
 	dsn := fs.String("d", "", "database url (default: $PGC_DATABASE_URL)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	explicit := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "c" {
-			explicit = true
+	allowDrift := fs.Bool("allow-drift", false,
+		"apply pending files even when an applied one changed or disappeared")
+	lockTimeout := fs.Duration("lock-timeout", 10*time.Minute,
+		"how long to wait for another run's lock (0: no limit)")
+	timeout := fs.Duration("timeout", 0,
+		"cancel the run after this long (0: no limit)")
+
+	// Flags may come before, between or after the words, so the parse
+	// resumes after each word.
+	var words []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return err
 		}
-	})
-	cfg, err := config.Load(*cfgPath, explicit)
+		if fs.NArg() == 0 {
+			break
+		}
+		words = append(words, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+
+	sub := "up"
+	if len(words) > 0 {
+		sub, words = words[0], words[1:]
+	}
+	want := map[string]int{"up": 0, "status": 0, "resolve": 2, "baseline": 1}
+	n, ok := want[sub]
+	if !ok {
+		return fmt.Errorf("unknown migrate command %q (want up, status, "+
+			"resolve or baseline)", sub)
+	}
+	if len(words) != n {
+		switch sub {
+		case "resolve":
+			return fmt.Errorf("usage: pgc migrate resolve <file> applied|retry")
+		case "baseline":
+			return fmt.Errorf("usage: pgc migrate baseline <last-file>")
+		}
+		return fmt.Errorf("pgc migrate %s takes no arguments, got %q",
+			sub, strings.Join(words, " "))
+	}
+
+	cfg, err := loadConfig(fs, *cfgPath)
 	if err != nil {
 		return err
 	}
 
-	conn, err := dial(*dsn)
+	conn, target, err := dialTarget(*dsn)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	fmt.Fprintf(os.Stderr, "pgc: database %s\n", target)
 
 	// A migration statement may legitimately run for a long time (index
-	// builds, backfills); wait for as long as the server needs.
+	// builds, backfills), so there is no per-request deadline. What bounds a
+	// run is -timeout and the operator: either cancels the statement in
+	// flight on the server, which leaves the connection able to roll back
+	// and release the lock.
 	conn.SetOpTimeout(0)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+	}
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintln(os.Stderr, "pgc: cancelling the statement in flight")
+			conn.Cancel(context.Background())
+		case <-finished:
+		}
+	}()
 
-	if status {
-		list, warnings, err := migrate.Status(conn, cfg.Migrations)
+	switch sub {
+	case "status":
+		return migrateStatus(conn, cfg.Migrations)
+	case "resolve":
+		if err := migrate.Resolve(conn, cfg.Migrations, words[0], words[1]); err != nil {
+			return err
+		}
+		fmt.Printf("resolved %s as %s\n", words[0], words[1])
+		return nil
+	case "baseline":
+		names, err := migrate.Baseline(conn, cfg.Migrations, words[0])
 		if err != nil {
 			return err
 		}
-		for _, m := range list {
-			if m.Applied {
-				fmt.Printf("applied  %-40s %s\n", m.Name, m.AppliedAt)
-				continue
-			}
-			fmt.Printf("pending  %s\n", m.Name)
-		}
-		for _, w := range warnings {
-			fmt.Fprintln(os.Stderr, "warning:", w)
+		for _, name := range names {
+			fmt.Println("baseline", name)
 		}
 		return nil
 	}
 
-	res, err := migrate.Run(conn, cfg.Migrations)
+	res, err := migrate.Run(conn, cfg.Migrations, migrate.Options{
+		AllowDrift:  *allowDrift,
+		LockTimeout: *lockTimeout,
+	})
 	if res != nil {
 		for _, name := range res.Applied {
 			fmt.Println("applied", name)
@@ -334,10 +399,38 @@ func migrateCmd(args []string) error {
 		}
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w (cancelled: %v)", err, context.Cause(ctx))
+		}
 		return err
 	}
 	if len(res.Applied) == 0 {
 		fmt.Println("nothing to apply")
+	}
+	return nil
+}
+
+// migrateStatus prints the state of every migration and fails when any needs
+// a person to look at it, so a CI step can gate on it.
+func migrateStatus(conn *pgwire.Conn, dir string) error {
+	list, err := migrate.Status(conn, dir)
+	if err != nil {
+		return err
+	}
+	problems := 0
+	for _, m := range list {
+		if m.Problem() {
+			problems++
+		}
+		if m.AppliedAt != "" {
+			fmt.Printf("%-8s %-40s %s\n", m.State, m.Name, m.AppliedAt)
+			continue
+		}
+		fmt.Printf("%-8s %s\n", m.State, m.Name)
+	}
+	if problems > 0 {
+		return fmt.Errorf("%d migration(s) need attention: changed or missing "+
+			"files, or no-transaction files left unfinished", problems)
 	}
 	return nil
 }
@@ -349,22 +442,38 @@ var errNoDatabase = errors.New(
 	"no database url: set PGC_DATABASE_URL or pass -d")
 
 func dial(dsn string) (*pgwire.Conn, error) {
+	conn, _, err := dialTarget(dsn)
+	return conn, err
+}
+
+// dialTarget connects and also describes where to: user, host, port and
+// database, and which setting named them - never the password. Commands that
+// change a database print it first, so a DATABASE_URL meant for something
+// else is noticed.
+func dialTarget(dsn string) (*pgwire.Conn, string, error) {
+	source := "-d"
 	if dsn == "" {
-		dsn = os.Getenv("PGC_DATABASE_URL")
+		dsn, source = os.Getenv("PGC_DATABASE_URL"), "PGC_DATABASE_URL"
 	}
 	if dsn == "" {
-		dsn = os.Getenv("DATABASE_URL")
+		dsn, source = os.Getenv("DATABASE_URL"), "DATABASE_URL"
 	}
 	if dsn == "" {
-		return nil, errNoDatabase
+		return nil, "", errNoDatabase
 	}
 	cfg, err := pgwire.ParseURL(dsn)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	target := fmt.Sprintf("%s@%s/%s (from %s)",
+		cfg.User, net.JoinHostPort(cfg.Host, cfg.Port), cfg.Database, source)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return pgwire.Dial(ctx, cfg)
+	conn, err := pgwire.Dial(ctx, cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	return conn, target, nil
 }
 
 func describeCmd(args []string) error {

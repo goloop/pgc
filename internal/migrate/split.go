@@ -4,18 +4,26 @@ import "strings"
 
 // splitStatements cuts a SQL script into its top-level statements, honoring
 // string literals, quoted identifiers, dollar-quoted bodies and both comment
-// forms, so a semicolon inside any of them never splits. Empty statements
-// are dropped.
+// forms, so a semicolon inside any of them never splits. A SQL-standard
+// function body (CREATE FUNCTION ... BEGIN ATOMIC ... END) is one statement
+// too, the way psql reads it. Empty statements are dropped.
 func splitStatements(sql string) []string {
 	var stmts []string
 	start := 0
 	i := 0
+
+	// words holds the first identifiers of the current statement and depth
+	// the BEGIN/CASE ... END nesting inside a CREATE FUNCTION or CREATE
+	// PROCEDURE body, where a semicolon does not end the statement.
+	var words []string
+	depth := 0
 
 	flush := func(end int) {
 		s := strings.TrimSpace(sql[start:end])
 		if s != "" {
 			stmts = append(stmts, s)
 		}
+		words, depth = words[:0], 0
 	}
 
 	for i < len(sql) {
@@ -36,15 +44,121 @@ func splitStatements(sql string) []string {
 		case c == '$':
 			i = skipDollarQuoted(sql, i)
 		case c == ';':
+			if depth > 0 {
+				i++
+				continue
+			}
 			flush(i)
 			i++
 			start = i
+		case isIdentStart(c):
+			j := i + 1
+			for j < len(sql) && (isIdentByte(sql[j]) || sql[j] == '$') {
+				j++
+			}
+			word := strings.ToLower(sql[i:j])
+			if len(words) < 4 {
+				words = append(words, word)
+			}
+			switch word {
+			case "begin", "case":
+				if routineBody(words) {
+					depth++
+				}
+			case "end":
+				if depth > 0 {
+					depth--
+				}
+			}
+			i = j
 		default:
 			i++
 		}
 	}
 	flush(len(sql))
 	return stmts
+}
+
+// routineBody reports whether a statement's first words open a CREATE
+// FUNCTION or CREATE PROCEDURE, the statements a BEGIN ATOMIC body belongs
+// to - the test psql uses.
+func routineBody(words []string) bool {
+	if len(words) < 2 || words[0] != "create" {
+		return false
+	}
+	switch words[1] {
+	case "function", "procedure":
+		return true
+	case "or":
+		return len(words) >= 4 && words[2] == "replace" &&
+			(words[3] == "function" || words[3] == "procedure")
+	}
+	return false
+}
+
+// isIdentStart reports whether c can begin an unquoted identifier or keyword.
+// Non-ASCII bytes count, as PostgreSQL allows letters beyond ASCII.
+func isIdentStart(c byte) bool {
+	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+}
+
+// transactionControl returns the command a top-level statement ends or starts
+// a transaction with (BEGIN, COMMIT, ROLLBACK and their synonyms), or "" for
+// anything else. Savepoints stay inside the transaction and are allowed.
+func transactionControl(stmt string) string {
+	first, second := leadingWords(stmt)
+	switch first {
+	case "begin", "commit", "end", "abort":
+		return strings.ToUpper(first)
+	case "start":
+		if second == "transaction" {
+			return "START TRANSACTION"
+		}
+	case "rollback":
+		if second != "to" {
+			return "ROLLBACK"
+		}
+	case "prepare":
+		if second == "transaction" {
+			return "PREPARE TRANSACTION"
+		}
+	}
+	return ""
+}
+
+// leadingWords returns the first two words of a statement, lowercased, after
+// any leading comments.
+func leadingWords(stmt string) (string, string) {
+	var words []string
+	i := 0
+	for i < len(stmt) && len(words) < 2 {
+		c := stmt[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f':
+			i++
+		case strings.HasPrefix(stmt[i:], "--"):
+			if j := strings.IndexByte(stmt[i:], '\n'); j >= 0 {
+				i += j + 1
+			} else {
+				i = len(stmt)
+			}
+		case strings.HasPrefix(stmt[i:], "/*"):
+			i = skipBlockComment(stmt, i)
+		case isIdentStart(c):
+			j := i + 1
+			for j < len(stmt) && (isIdentByte(stmt[j]) || stmt[j] == '$') {
+				j++
+			}
+			words = append(words, strings.ToLower(stmt[i:j]))
+			i = j
+		default:
+			i = len(stmt) // punctuation: no more leading keywords
+		}
+	}
+	for len(words) < 2 {
+		words = append(words, "")
+	}
+	return words[0], words[1]
 }
 
 // skipQuoted advances past a quoted region opened at i, where a doubled quote
