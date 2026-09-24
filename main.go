@@ -41,7 +41,7 @@ import (
 // fallbackVersion is the release this source belongs to, for a binary built
 // from a checkout (`go build`, `go run`), where the module has no tag to
 // report.
-const fallbackVersion = "1.0.0"
+const fallbackVersion = "1.0.1"
 
 // version is what `pgc version` prints and what pgc.lock.json records. A binary
 // built with `go install github.com/goloop/pgc@vX.Y.Z` reports that tag, read
@@ -359,14 +359,10 @@ func migrateCmd(args []string) error {
 	}
 	finished := make(chan struct{})
 	defer close(finished)
-	go func() {
-		select {
-		case <-ctx.Done():
-			fmt.Fprintln(os.Stderr, "pgc: cancelling the statement in flight")
-			conn.Cancel(context.Background())
-		case <-finished:
-		}
-	}()
+	go cancelOnDone(ctx, finished, func() {
+		fmt.Fprintln(os.Stderr, "pgc: cancelling the statement in flight")
+		conn.Cancel(context.Background())
+	})
 
 	switch sub {
 	case "status":
@@ -410,6 +406,22 @@ func migrateCmd(args []string) error {
 		fmt.Println("nothing to apply")
 	}
 	return nil
+}
+
+// cancelOnDone calls cancel when ctx ends before finished is closed. The
+// command closes finished before its deferred calls end ctx, so a run that is
+// over is never cancelled: when both are ready, finished wins.
+func cancelOnDone(ctx context.Context, finished <-chan struct{}, cancel func()) {
+	select {
+	case <-ctx.Done():
+		select {
+		case <-finished:
+			return
+		default:
+		}
+		cancel()
+	case <-finished:
+	}
 }
 
 // migrateStatus prints the state of every migration and fails when any needs
