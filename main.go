@@ -24,7 +24,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -99,8 +98,9 @@ func usage() {
 
 Usage:
   pgc generate [-c pgc.json] [-d url]  compile the queries into a Go package
-  pgc check    [-c pgc.json] [-d url]  compile without writing, for CI
-  pgc verify   [-c pgc.json] [-d url]  check pgc.lock.json against the database
+  pgc check    [-c pgc.json] [-d url]  fail unless the package is up to date
+  pgc verify   [-c pgc.json] [-d url]  check the queries' types in pgc.lock.json
+                                       against the database
   pgc migrate  [up] [-c pgc.json] [-d url] [-allow-drift]
                [-lock-timeout 10m] [-timeout 0]
                                        apply pending migrations, in order
@@ -123,7 +123,9 @@ you when it drifts.
 `)
 }
 
-// generateCmd runs the compiler; with write=false it only verifies.
+// generateCmd runs the compiler. generate brings the output directory up to
+// date - writing what changed, removing what pgc wrote earlier for queries
+// that are gone - and check, with write=false, only reports whether it is.
 //
 // With a database URL it works the way it always has, and generate records
 // what the server said in pgc.lock.json. Without one, both commands read that
@@ -189,20 +191,20 @@ func generateCmd(args []string, write bool) error {
 		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 
-	if !write {
-		fmt.Printf("ok: %d file(s) compile cleanly\n", len(res.Files))
-		return nil
-	}
-
-	if err := os.MkdirAll(cfg.Out, 0o755); err != nil {
+	plan, err := planOutput(cfg.Out, res.Files)
+	if err != nil {
 		return err
 	}
-	for _, f := range res.Files {
-		path := filepath.Join(cfg.Out, f.Name)
-		if err := os.WriteFile(path, f.Data, 0o644); err != nil {
-			return err
+	if !write {
+		if !plan.empty() {
+			return fmt.Errorf("the generated package differs from what the "+
+				"queries produce; run pgc generate:\n%s", plan.describe(cfg.Out))
 		}
-		fmt.Println(path)
+		fmt.Printf("ok: %d generated file(s) up to date\n", len(res.Files))
+		return nil
+	}
+	if err := plan.apply(cfg.Out); err != nil {
+		return err
 	}
 
 	if lock != nil {
@@ -258,7 +260,7 @@ func verifyCmd(args []string) error {
 
 	diffs := recorded.Compare(fresh)
 	if len(diffs) == 0 {
-		fmt.Printf("ok: %s matches the database (%s)\n",
+		fmt.Printf("ok: the query types in %s match the database (%s)\n",
 			snapshot.TrimPath(path), fresh.Summary())
 		return nil
 	}

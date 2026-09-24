@@ -102,7 +102,32 @@ func Save(path string, f *File) error {
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return writeFileAtomic(path, append(data, '\n'), 0o644)
+}
+
+// writeFileAtomic replaces path with data in one rename, so an interrupted
+// run never leaves a record cut short.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	if err := os.Chmod(name, perm); err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	return nil
 }
 
 // Load reads a snapshot.

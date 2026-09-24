@@ -324,3 +324,66 @@ func TestIntegrationCLINeverAppliesByAccident(t *testing.T) {
 		t.Fatal("migrate up did not apply")
 	}
 }
+
+// Deleting a query file removes its generated file on the next generate, and
+// check fails until then.
+func TestIntegrationGenerateRemovesStaleFiles(t *testing.T) {
+	_, dsn := freshDB(t)
+	dir := files(t, map[string]string{
+		"one.sql": "-- name: One :one\nSELECT 1 AS n;",
+		"two.sql": "-- name: Two :one\nSELECT 2 AS n;",
+	})
+	out := filepath.Join(t.TempDir(), "generated")
+	os.MkdirAll(out, 0o755)
+	os.WriteFile(filepath.Join(out, "extra.go"), []byte("package generated\n"), 0o644)
+	cfgPath := filepath.Join(t.TempDir(), "pgc.json")
+	os.WriteFile(cfgPath, []byte(fmt.Sprintf(
+		`{"queries":%q,"out":%q,"package":"generated"}`, dir, out)), 0o644)
+	t.Setenv("PGC_DATABASE_URL", dsn)
+
+	if err := run([]string{"generate", "-c", cfgPath}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"check", "-c", cfgPath}); err != nil {
+		t.Fatalf("check right after generate: %v", err)
+	}
+	os.Remove(filepath.Join(dir, "one.sql"))
+	if err := run([]string{"check", "-c", cfgPath}); err == nil {
+		t.Fatal("check passed with a stale generated file")
+	}
+	if err := run([]string{"generate", "-c", cfgPath}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "one.sql.go")); !os.IsNotExist(err) {
+		t.Fatal("one.sql.go survived its query file")
+	}
+	if _, err := os.Stat(filepath.Join(out, "extra.go")); err != nil {
+		t.Fatal("a hand-written file was removed")
+	}
+	if err := run([]string{"check", "-c", cfgPath}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A query that reuses a table's full column set but overrides a column's
+// nullability gets a row struct that can hold the NULL an outer join returns.
+func TestIntegrationOverrideAgainstARealOuterJoin(t *testing.T) {
+	c, dsn := freshDB(t)
+	c.Exec("CREATE TABLE parent(id int PRIMARY KEY); " +
+		"CREATE TABLE child(id int PRIMARY KEY, name text NOT NULL); " +
+		"INSERT INTO parent VALUES (1)")
+	dir := files(t, map[string]string{"q.sql": "-- name: Child :one\n" +
+		"-- override: id nullable\n-- override: name nullable\n" +
+		"SELECT child.id, child.name FROM parent LEFT JOIN child ON child.id = parent.id;"})
+	out := filepath.Join(t.TempDir(), "db")
+	cfgPath := filepath.Join(t.TempDir(), "pgc.json")
+	os.WriteFile(cfgPath, []byte(fmt.Sprintf(`{"queries":%q,"out":%q}`, dir, out)), 0o644)
+	t.Setenv("PGC_DATABASE_URL", dsn)
+	if err := run([]string{"generate", "-c", cfgPath}); err != nil {
+		t.Fatal(err)
+	}
+	src, _ := os.ReadFile(filepath.Join(out, "q.sql.go"))
+	if !strings.Contains(string(src), "ID   *int32") || !strings.Contains(string(src), "Name *string") {
+		t.Fatalf("the overrides were not applied:\n%s", src)
+	}
+}

@@ -82,3 +82,16 @@ func TestInitialisms(t *testing.T) {
 		}
 	}
 }
+
+// A misspelt key is an error, not a silently kept default.
+func TestLoadRejectsUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pgc.json")
+	os.WriteFile(path, []byte(`{"nulable": "sqlnull"}`), 0o644)
+	if _, err := Load(path, true); err == nil || !strings.Contains(err.Error(), "nulable") {
+		t.Fatalf("err = %v, want the unknown key named", err)
+	}
+	os.WriteFile(path, []byte(`{"out": "db"} {"out": "x"}`), 0o644)
+	if _, err := Load(path, true); err == nil {
+		t.Fatal("trailing data was accepted")
+	}
+}

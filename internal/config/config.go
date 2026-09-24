@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,8 +76,15 @@ func Load(path string, explicit bool) (Config, error) {
 	case err != nil:
 		return Config{}, fmt.Errorf("config: %w", err)
 	default:
-		if err := json.Unmarshal(data, &cfg); err != nil {
+		// Unknown keys are errors: a misspelt "nulable" would otherwise
+		// leave the default in force without a word.
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&cfg); err != nil {
 			return Config{}, fmt.Errorf("config: %s: %w", path, err)
+		}
+		if dec.More() {
+			return Config{}, fmt.Errorf("config: %s: data after the JSON object", path)
 		}
 	}
 
