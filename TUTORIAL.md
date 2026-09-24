@@ -338,7 +338,7 @@ better:
 -- override: total int64 notnull        -- expression: force NOT NULL
 -- override: avatar_url nullable        -- flip only the nullability
 -- override: $3 *time.Time              -- parameter may be NULL
--- override: $1 github.com/google/uuid.UUID   -- type from another module
+-- override: $1 example.com/shop/money.Amount   -- type from another module
 ```
 
 An explicit Go type is taken verbatim, its nullability included. A type
@@ -614,7 +614,7 @@ Most jobs need no database: they generate from the committed `pgc.lock.json`
 and fail if the result differs from what was committed.
 
 ```sh
-go install github.com/goloop/pgc@v0.9.0   # pin pgc, and pin Go too
+go install github.com/goloop/pgc@v1.0.0   # pin pgc, and pin Go too
 pgc generate
 git diff --exit-code   # fails if the committed code is stale
 ```
@@ -623,7 +623,7 @@ One job should have a disposable PostgreSQL, to prove the record is still
 true - otherwise it is only a record of what used to be:
 
 ```sh
-go install github.com/goloop/pgc@v0.9.0
+go install github.com/goloop/pgc@v1.0.0
 pgc migrate
 pgc verify             # fails when pgc.lock.json and the schema disagree
 ```

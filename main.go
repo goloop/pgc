@@ -41,7 +41,7 @@ import (
 // fallbackVersion is the release this source belongs to, for a binary built
 // from a checkout (`go build`, `go run`), where the module has no tag to
 // report.
-const fallbackVersion = "0.9.0"
+const fallbackVersion = "1.0.0"
 
 // version is what `pgc version` prints and what pgc.lock.json records. A binary
 // built with `go install github.com/goloop/pgc@vX.Y.Z` reports that tag, read

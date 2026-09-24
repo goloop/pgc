@@ -23,6 +23,7 @@ First time here? Start with the step-by-step **[TUTORIAL.md](TUTORIAL.md)**.
 - [Embedded rows](#embedded-rows)
 - [Generated code](#generated-code)
 - [CI recipe](#ci-recipe)
+- [Compatibility](#compatibility)
 - [Scope](#scope)
 
 ## Mental model
@@ -350,7 +351,7 @@ override there is an error.
 A Go type from another module is written with its full import path:
 
 ```sql
--- override: $1 github.com/google/uuid.UUID
+-- override: $1 example.com/shop/money.Amount
 ```
 
 The import is added to the generated file and the type is referred to by its
@@ -405,7 +406,7 @@ runs in, not the location of the configuration file.
   single alphanumeric word, since identifiers are split on `_` before matching.
 - **types** - per-PostgreSQL-type Go replacements, applied before the
   nullability wrapping; values may use full import paths
-  (`"uuid": "github.com/google/uuid.UUID"`).
+  (`"numeric": "example.com/shop/money.Amount"`).
 - **rename** - table name (optionally schema-qualified) to struct name.
   Without an entry the CamelCase of the table name is used as-is: pgc never
   guesses singular forms, so `users` is `Users` until you say
@@ -590,7 +591,7 @@ Most jobs need no database at all - they generate from the committed
 `pgc.lock.json`:
 
 ```sh
-go install github.com/goloop/pgc@v0.9.0   # pin the tool (and pin Go in CI)
+go install github.com/goloop/pgc@v1.0.0   # pin the tool (and pin Go in CI)
 pgc check              # fails when the committed package differs from the queries
 ```
 
@@ -599,7 +600,7 @@ One job should have a database, to prove the record is still true:
 ```sh
 docker run -d --name ci-pg -e POSTGRES_PASSWORD=ci -p 5432:5432 postgres:17-alpine
 export PGC_DATABASE_URL="postgres://postgres:ci@localhost:5432/postgres?sslmode=disable"
-go install github.com/goloop/pgc@v0.9.0
+go install github.com/goloop/pgc@v1.0.0
 pgc migrate
 pgc migrate status     # fails when the history needs attention
 pgc verify             # fails when pgc.lock.json and the schema disagree
@@ -612,6 +613,33 @@ the result with the output directory, file by file - including files pgc
 generated earlier for query files that are gone, which `generate` removes. It
 writes nothing and fails on any difference. It does not type-check the
 generated package; `go build ./...` and your tests do that.
+
+## Compatibility
+
+From v1 on, these are the contract, and none of them changes incompatibly
+within v1:
+
+- the commands, their subcommands and flags, and their exit codes - zero on
+  success, non-zero on any error and whenever `check`, `verify` or
+  `migrate status` find something to report;
+- the `pgc.json` keys and their meaning, with relative directories resolved
+  against the working directory;
+- the `pgc.lock.json` format: a file written by one v1 release is read by
+  every later one (the file carries a format number, and a newer one will
+  only ever be written by a newer major version);
+- the `public.pgc_migrations` table: its name, the `name`, `hash` and
+  `applied_at` columns and the `state` values `applied`, `started` and
+  `failed`;
+- the connection URL: its parameters and their defaults, `sslmode=prefer`
+  included;
+- the shape of the generated code - method signatures, struct and field names,
+  the `DBTX` and `Querier` contracts - for a given schema and set of queries.
+
+Within v1, new commands, flags and configuration keys may be added, and a fix
+may change generated code where the old output was wrong (a type that could
+not hold what the column returns, say); the release notes then say so, and
+regenerating shows it in the diff. Messages and warnings are for people and
+may be reworded at any time: scripts should rely on exit codes.
 
 ## Scope
 

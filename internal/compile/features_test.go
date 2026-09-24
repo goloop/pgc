@@ -76,8 +76,8 @@ func TestDomainArrayAndCustomType(t *testing.T) {
 	dir := writeQueries(t, `-- name: FindUsers :many
 `+sql+`;
 
--- name: FindByUUID :many
--- override: $1 github.com/google/uuid.UUID
+-- name: FindByEmail :many
+-- override: $1 example.com/app/ident.Email
 `+custom+`;
 `)
 
@@ -116,8 +116,8 @@ func TestDomainArrayAndCustomType(t *testing.T) {
 		"func (q *Queries) FindUsers(ctx context.Context, id []int32) ([]User, error) {",
 		"q.db.QueryContext(ctx, findUsers, int32Array(id))",
 		"(*int32Array)(&u.Tags)",
-		"func (q *Queries) FindByUUID(ctx context.Context, email uuid.UUID) ([]int64, error) {",
-		"\"github.com/google/uuid\"",
+		"func (q *Queries) FindByEmail(ctx context.Context, email ident.Email) ([]int64, error) {",
+		"\"example.com/app/ident\"",
 	} {
 		if !strings.Contains(users, want) {
 			t.Errorf("users.sql.go missing %q:\n%s", want, users)

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-09-24
+
+First stable release. The code is that of 0.9.0; what 1.0.0 adds is the
+promise. The commands and their exit codes, the `pgc.json` keys, the
+`pgc.lock.json` format, the `pgc_migrations` table, the connection URL and the
+shape of the generated code are now a contract that does not change
+incompatibly within v1 - see "Compatibility" in DOC.md. Development continues
+on the `v1` branch.
+
+### Added
+- A "Compatibility" section in the reference (DOC.md, DOC.UK.md) that spells
+  out what v1 guarantees and what it leaves free to change.
+
+### Changed
+- Two defaults are settled as part of that contract rather than left open:
+  relative directories in `pgc.json` resolve against the working directory,
+  and `sslmode` defaults to `prefer`.
+- The documentation's examples of a type from another module use a neutral
+  placeholder path, and the install commands pin `@v1.0.0`.
+
 ## [0.9.0] - 2026-09-24
 
 Minor release: migrations refuse what they cannot apply safely, generated code
@@ -380,7 +400,7 @@ Minor release: a nullable `json`/`jsonb` column now survives a SQL NULL.
 - `-- embed: <table> [as <Field>]` nests a joined table's full row as its
   model struct inside the query's row struct.
 - Go types from other modules in overrides and the `types` map, written
-  with their full import path (`github.com/google/uuid.UUID`).
+  with their full import path (`example.com/shop/money.Amount`).
 - `"json_tags": true` adds `json:"column_name"` tags to model and row
   structs.
 - `"interface": true` emits `querier.go` with a `Querier` interface that

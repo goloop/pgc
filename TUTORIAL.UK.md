@@ -337,7 +337,7 @@ godoc-реченням згенерованого методу. Пиши як go
 -- override: total int64 notnull        -- вираз: примусити NOT NULL
 -- override: avatar_url nullable        -- перемкнути лише nullability
 -- override: $3 *time.Time              -- параметр може бути NULL
--- override: $1 github.com/google/uuid.UUID   -- тип з іншого модуля
+-- override: $1 example.com/shop/money.Amount   -- тип з іншого модуля
 ```
 
 Явний Go-тип береться дослівно, разом із його nullability. Тип з іншого
@@ -613,7 +613,7 @@ go build ./...                          # 4. компілятор покаже �
 `pgc.lock.json` і падають, якщо результат відрізняється від закоміченого.
 
 ```sh
-go install github.com/goloop/pgc@v0.9.0   # запінь pgc, і Go теж
+go install github.com/goloop/pgc@v1.0.0   # запінь pgc, і Go теж
 pgc generate
 git diff --exit-code   # падає, якщо закомічений код застарів
 ```
@@ -622,7 +622,7 @@ git diff --exit-code   # падає, якщо закомічений код за
 правдивий, інакше це лише запис про те, як було колись:
 
 ```sh
-go install github.com/goloop/pgc@v0.9.0
+go install github.com/goloop/pgc@v1.0.0
 pgc migrate
 pgc verify             # падає, коли pgc.lock.json і схема розійшлись
 ```
