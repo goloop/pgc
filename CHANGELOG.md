@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-24
+
+Patch release.
+
+### Fixed
+- `pgc migrate` could print "cancelling the statement in flight" and send the
+  server a cancel request after the run had already ended - on success and on
+  an error alike. The end of the run and the end of its context raced; a run
+  that is over now always wins.
+
+### Documentation
+- The README states the v1 compatibility promise, points to the changelog and
+  explains how to run the integration tests against a disposable server.
+
 ## [1.0.0] - 2026-09-24
 
 First stable release. The code is that of 0.9.0; what 1.0.0 adds is the

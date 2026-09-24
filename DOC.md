@@ -591,7 +591,7 @@ Most jobs need no database at all - they generate from the committed
 `pgc.lock.json`:
 
 ```sh
-go install github.com/goloop/pgc@v1.0.0   # pin the tool (and pin Go in CI)
+go install github.com/goloop/pgc@v1.0.1   # pin the tool (and pin Go in CI)
 pgc check              # fails when the committed package differs from the queries
 ```
 
@@ -600,7 +600,7 @@ One job should have a database, to prove the record is still true:
 ```sh
 docker run -d --name ci-pg -e POSTGRES_PASSWORD=ci -p 5432:5432 postgres:17-alpine
 export PGC_DATABASE_URL="postgres://postgres:ci@localhost:5432/postgres?sslmode=disable"
-go install github.com/goloop/pgc@v1.0.0
+go install github.com/goloop/pgc@v1.0.1
 pgc migrate
 pgc migrate status     # fails when the history needs attention
 pgc verify             # fails when pgc.lock.json and the schema disagree

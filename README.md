@@ -18,6 +18,12 @@ speaks the PostgreSQL wire protocol directly.
 go install github.com/goloop/pgc@latest
 ```
 
+pgc is stable from v1: the commands and their exit codes, `pgc.json`, the
+`pgc.lock.json` format, the migration history table, the connection URL and the
+shape of the generated code do not change incompatibly within v1. The
+"Compatibility" section of [DOC.md](DOC.md#compatibility) spells out what that
+covers. Pin the version in CI (`@v1.0.1` rather than `@latest`).
+
 Building from source requires Go 1.24 or newer. Prebuilt binaries for
 Linux, macOS and Windows are attached to the
 [releases](https://github.com/goloop/pgc/releases), with checksums.
@@ -122,8 +128,10 @@ a running program in about twenty minutes - Docker database, migrations,
 annotations, generation and usage, all copy-pasteable.
 
 Full reference: **[DOC.md](DOC.md)** (Ukrainian: **[DOC.UK.md](DOC.UK.md)**) -
-annotations, configuration, the type mapping, nullability rules and the
-anatomy of the generated code.
+migrations, annotations, configuration, the type mapping, nullability rules,
+the anatomy of the generated code and the compatibility promise.
+
+Changes between releases: **[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Contributing
 
@@ -133,6 +141,16 @@ Before submitting changes, run:
 gofmt -l .
 go vet ./...
 go test ./...
+```
+
+The integration tests run against a real PostgreSQL. They create and drop
+databases of their own, so point them at a disposable server only:
+
+```shell
+docker run -d --rm --name pgc-test -e POSTGRES_PASSWORD=test \
+  -p 127.0.0.1:55432:5432 postgres:17-alpine
+PGC_DATABASE_URL="postgres://postgres:test@127.0.0.1:55432/postgres?sslmode=disable" \
+  go test -tags integration ./...
 ```
 
 ## License

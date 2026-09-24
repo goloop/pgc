@@ -593,7 +593,7 @@ q.WithTx(tx).DeleteUser(..) // *sql.Tx теж задовольняє
 `pgc.lock.json`:
 
 ```sh
-go install github.com/goloop/pgc@v1.0.0   # запінити інструмент (і Go в CI)
+go install github.com/goloop/pgc@v1.0.1   # запінити інструмент (і Go в CI)
 pgc check              # падає, коли закомічений пакет розійшовся із запитами
 ```
 
@@ -602,7 +602,7 @@ pgc check              # падає, коли закомічений пакет 
 ```sh
 docker run -d --name ci-pg -e POSTGRES_PASSWORD=ci -p 5432:5432 postgres:17-alpine
 export PGC_DATABASE_URL="postgres://postgres:ci@localhost:5432/postgres?sslmode=disable"
-go install github.com/goloop/pgc@v1.0.0
+go install github.com/goloop/pgc@v1.0.1
 pgc migrate
 pgc migrate status     # падає, коли історія потребує уваги
 pgc verify             # падає, коли pgc.lock.json і схема розійшлись

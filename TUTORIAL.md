@@ -614,7 +614,7 @@ Most jobs need no database: they generate from the committed `pgc.lock.json`
 and fail if the result differs from what was committed.
 
 ```sh
-go install github.com/goloop/pgc@v1.0.0   # pin pgc, and pin Go too
+go install github.com/goloop/pgc@v1.0.1   # pin pgc, and pin Go too
 pgc generate
 git diff --exit-code   # fails if the committed code is stale
 ```
@@ -623,7 +623,7 @@ One job should have a disposable PostgreSQL, to prove the record is still
 true - otherwise it is only a record of what used to be:
 
 ```sh
-go install github.com/goloop/pgc@v1.0.0
+go install github.com/goloop/pgc@v1.0.1
 pgc migrate
 pgc verify             # fails when pgc.lock.json and the schema disagree
 ```

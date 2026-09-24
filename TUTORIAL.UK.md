@@ -613,7 +613,7 @@ go build ./...                          # 4. компілятор покаже �
 `pgc.lock.json` і падають, якщо результат відрізняється від закоміченого.
 
 ```sh
-go install github.com/goloop/pgc@v1.0.0   # запінь pgc, і Go теж
+go install github.com/goloop/pgc@v1.0.1   # запінь pgc, і Go теж
 pgc generate
 git diff --exit-code   # падає, якщо закомічений код застарів
 ```
@@ -622,7 +622,7 @@ git diff --exit-code   # падає, якщо закомічений код за
 правдивий, інакше це лише запис про те, як було колись:
 
 ```sh
-go install github.com/goloop/pgc@v1.0.0
+go install github.com/goloop/pgc@v1.0.1
 pgc migrate
 pgc verify             # падає, коли pgc.lock.json і схема розійшлись
 ```
