@@ -6,9 +6,10 @@
 #   make release   create the GitHub release for the current tag
 #                  and upload the dist/ archives (needs the gh CLI)
 #
-# Releases refuse to build while the version constant in main.go disagrees with
-# the tag. It has fallen behind twice, and a tool that misreports its own
-# version writes that wrong version into every pgc.lock.json it produces.
+# Releases refuse to build while the fallback version in main.go disagrees with
+# the tag, or while the binary itself reports another version. It has fallen
+# behind before, and a tool that misreports its own version writes that wrong
+# version into every pgc.lock.json it produces.
 
 VERSION := $(shell git describe --tags --abbrev=0)
 DIST    := dist
@@ -24,19 +25,28 @@ check:
 	go vet ./...
 	go test ./...
 
-# version fails when main.go and the newest tag name different versions, so a
-# release cannot be cut with a stale constant. Bump the constant in the same
-# commit the tag will point at - documentation-only releases included.
+# version fails when main.go's fallbackVersion, or the version a freshly built
+# binary prints, differs from the newest tag (go build stamps the binary with
+# the tag of a clean checkout, and a pseudo-version otherwise) - so a release cannot be cut with
+# a stale constant, and the check follows the artifact rather than a pattern
+# in the source. Bump the constant in the same commit the tag will point at -
+# documentation-only releases included.
 #
 # It guards dist and release only. Between releases the constant is meant to be
 # ahead of the newest tag, so making everyday commands depend on this would
 # fail exactly when the work was done right.
 version:
 	@expected=$(VERSION); expected=$${expected#v}; \
-	found=$$(sed -n 's/^const version = "\(.*\)"$$/\1/p' main.go); \
+	found=$$(sed -n 's/^const fallbackVersion = "\(.*\)"$$/\1/p' main.go); \
 	if [ "$$found" != "$$expected" ]; then \
-		echo "main.go says version $$found, but the tag says $$expected"; \
-		echo "bump the constant in the commit the tag points at"; \
+		echo "main.go says version '$$found', but the tag says $$expected"; \
+		echo "bump fallbackVersion in the commit the tag points at"; \
+		exit 1; \
+	fi; \
+	go build -trimpath -o .pgc-version . && \
+	built=$$(./.pgc-version version | awk '{print $$2}'); rm -f .pgc-version; \
+	if [ "$$built" != "$$expected" ]; then \
+		echo "the binary reports version '$$built', but the tag says $$expected"; \
 		exit 1; \
 	fi
 

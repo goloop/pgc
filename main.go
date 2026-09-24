@@ -23,6 +23,7 @@ import (
 	iofs "io/fs"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -35,7 +36,25 @@ import (
 	"github.com/goloop/pgc/internal/snapshot"
 )
 
-const version = "0.7.5"
+// fallbackVersion is the release this source belongs to, for a binary built
+// from a checkout (`go build`, `go run`), where the module has no tag to
+// report.
+const fallbackVersion = "0.8.3"
+
+// version is what `pgc version` prints and what pgc.lock.json records. A binary
+// built with `go install github.com/goloop/pgc@vX.Y.Z` reports that tag, read
+// from the build info, so the string cannot fall behind the release the way a
+// constant edited by hand does.
+var version = buildVersion()
+
+func buildVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if v := bi.Main.Version; v != "" && v != "(devel)" {
+			return strings.TrimPrefix(v, "v")
+		}
+	}
+	return fallbackVersion
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
