@@ -176,6 +176,7 @@ pgc migrate
 ```
 
 ```
+pgc: database app@127.0.0.1:5433/app (from PGC_DATABASE_URL)
 applied 001_init.sql
 ```
 
@@ -183,9 +184,10 @@ Each file runs inside its own transaction together with its bookkeeping
 row in the `pgc_migrations` table, so a failed migration leaves nothing
 behind - fix the file and run again. A second `pgc migrate` says `nothing
 to apply`: files are applied exactly once, and editing an already-applied
-file earns a warning instead of a re-run (write the next migration
-instead - the schema only rolls forward). `pgc migrate status` lists what
-is applied and what is pending. Numbered names (`001_...`, `002_...`) keep
+file stops the next run with an error instead of re-running it (write the
+next migration instead - the schema only rolls forward). `pgc migrate
+status` lists what is applied and what is pending, and exits non-zero when
+something needs attention. Numbered names (`001_...`, `002_...`) keep
 the order stable as the project grows.
 
 Verify with the `psql` inside the container:
@@ -612,7 +614,7 @@ Most jobs need no database: they generate from the committed `pgc.lock.json`
 and fail if the result differs from what was committed.
 
 ```sh
-go install github.com/goloop/pgc@v0.7.0   # pin pgc, and pin Go too
+go install github.com/goloop/pgc@v0.9.0   # pin pgc, and pin Go too
 pgc generate
 git diff --exit-code   # fails if the committed code is stale
 ```
@@ -621,12 +623,13 @@ One job should have a disposable PostgreSQL, to prove the record is still
 true - otherwise it is only a record of what used to be:
 
 ```sh
-go install github.com/goloop/pgc@v0.7.0
+go install github.com/goloop/pgc@v0.9.0
 pgc migrate
 pgc verify             # fails when pgc.lock.json and the schema disagree
 ```
 
-`pgc check` is the middle ground: it compiles every query and writes nothing.
+`pgc check` is the middle ground: it compiles every query, writes nothing,
+and fails when the generated package on disk differs from the result.
 
 Two concurrent CI jobs cannot race the migrations: `pgc migrate` holds a
 PostgreSQL advisory lock for the whole run, so the second job waits.

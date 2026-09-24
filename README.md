@@ -85,20 +85,27 @@ and `initialisms` for your domain's abbreviations, so `seo_title` becomes
 
 ```
 pgc generate [-c pgc.json] [-d url]  compile the queries into a Go package
-pgc check    [-c pgc.json] [-d url]  compile without writing, for CI
-pgc verify   [-c pgc.json] [-d url]  check pgc.lock.json against the database
-pgc migrate  [-c pgc.json] [-d url]  apply pending migrations, in order
-pgc migrate status                   list applied and pending migrations
+pgc check    [-c pgc.json] [-d url]  fail unless the package is up to date
+pgc verify   [-c pgc.json] [-d url]  check the query types in pgc.lock.json
+                                     against the database
+pgc migrate  [up] [-c pgc.json] [-d url]
+                                     apply pending migrations, in order
+pgc migrate status                   list every migration's state
+pgc migrate resolve <file> applied|retry
+pgc migrate baseline <last-file>
 pgc describe [-d url] "SELECT ..."   print parameter and column types
 pgc version                          print the version
 ```
 
 `pgc migrate` applies plain-SQL migration files exactly once each, in name
 order - one transaction per file, an advisory lock against concurrent runs
-and a bookkeeping table, so the whole database lifecycle lives in one tool:
-`pgc migrate`, `pgc generate`, `pgc check`. In CI, `pgc check` plus
-`git diff --exit-code` catches queries that no longer match the schema and
-generated code that drifted from its sources.
+and a history table checked before anything runs, so the whole database
+lifecycle lives in one tool: `pgc migrate`, `pgc generate`, `pgc check`. An
+applied file that was edited or deleted stops the run, a file with its own
+`COMMIT` is refused, and a no-transaction file that fails half way is never
+silently repeated. In CI, `pgc check` fails when the generated package no
+longer matches its queries, and `pgc migrate status` when the migration
+history needs attention.
 
 **Generating needs a database only once.** `pgc generate` records what the
 server said in `pgc.lock.json`; commit it, and every later run without a

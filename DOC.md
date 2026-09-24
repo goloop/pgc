@@ -75,47 +75,108 @@ postgres://app:...@db.example.com:5432/app?sslmode=verify-full&sslrootcert=/etc/
 `verify-full` checks the certificate chain and the host name;
 `verify-ca` checks only the chain. `require` with an `sslrootcert` is
 promoted to `verify-ca`, matching the standard connection-parameter
-behavior.
+behavior. `prefer`, the default, falls back to a plain connection when the
+server offers no TLS, and `require` without a root certificate encrypts
+without proving who the server is: for a production database - and for the
+role that runs migrations above all - use `verify-full`.
+
+`connect_timeout` (seconds) bounds connecting and authenticating. Parameters
+written for other tools, such as `application_name`, are ignored; a parameter
+that asks for a protection pgc does not provide - `sslcert`/`sslkey`,
+`sslcrl`, `channel_binding=require`, `gssencmode=require`, `require_auth` - is
+an error, as is a URL whose parameters do not decode, so a connection never
+looks safer than it is. Errors never repeat the URL, which carries the
+password.
+
+Authentication: SCRAM-SHA-256 (the server must prove it knows the password
+before pgc accepts the connection), MD5, and a clear-text password - the last
+only over TLS or to the local machine. Passwords are prepared with SASLprep as
+the server prepares them, except for Unicode normalization: a password that
+NFKC would change (fullwidth letters, ligatures, a letter followed by a
+combining accent) does not authenticate over SCRAM.
 
 ## Migrations
 
-`pgc migrate` applies the plain-SQL files of the `migrations` directory
-(configurable) exactly once each, in name order, and records what ran in a
-`pgc_migrations` table it creates on first contact (in the first schema of
-the connection's search_path, normally `public`). `pgc migrate status`
-lists applied and pending files.
+`pgc migrate` (or `pgc migrate up`) applies the plain-SQL files of the
+`migrations` directory (configurable) exactly once each, in name order, and
+records what ran in the `public.pgc_migrations` table it creates on first
+contact.
+
+```
+pgc migrate [up] [-c pgc.json] [-d url] [-allow-drift] [-lock-timeout 10m] [-timeout 0]
+pgc migrate status
+pgc migrate resolve <file> applied|retry
+pgc migrate baseline <last-file>
+```
+
+Every argument is checked before pgc connects, flags may stand before or
+after the subcommand, and an unknown word is an error - nothing but `up`
+applies anything. Commands that connect print the target first
+(`user@host:port/db (from PGC_DATABASE_URL)`, never the password), so a
+`DATABASE_URL` meant for something else is noticed.
 
 The rules, all enforced rather than assumed:
 
-- **Atomic by default.** Each file runs inside its own transaction
-  together with its bookkeeping row; a failed migration leaves nothing
-  behind - fix the file and run again. Do not put `BEGIN`/`COMMIT` inside
-  migration files.
+- **Checked before anything runs.** The whole directory is read and checked
+  first, then, under the lock, compared with the history. A problem stops
+  the run before the first pending file.
+- **Atomic by default.** Each file runs inside its own transaction together
+  with its history row; a failed migration leaves nothing behind - fix the
+  file and run again. A file that controls the transaction itself (`BEGIN`,
+  `COMMIT`, `ROLLBACK`, `END`, `START TRANSACTION`, `PREPARE TRANSACTION`) is
+  refused before it runs: a `COMMIT` would make half the file permanent, a
+  `ROLLBACK` would leave the history saying a file ran that did nothing.
+  Savepoints are fine. Should a file end the transaction some other way - a
+  procedure that commits - pgc notices and does not record it.
 - **No transaction when PostgreSQL forbids one.** A file whose first line
   is exactly `-- pgc: no-transaction` (for `CREATE INDEX CONCURRENTLY` and
-  friends) is split into statements and run one by one in autocommit; a
-  failure mid-file then leaves the earlier statements applied - the error
-  says so.
-- **Applied means immutable.** Every file's SHA-256 is recorded; editing
-  an already-applied file produces a warning on every later run. Write the
-  next migration instead.
+  friends) is split into statements and run one by one in autocommit. It is
+  recorded as `started` before its first statement and `applied` after its
+  last; a failure marks it `failed`. Either mark blocks later runs, because
+  the earlier statements may have taken effect and running the file again
+  would repeat them. Check the database, then settle it:
+  `pgc migrate resolve <file> applied` when it is complete now (finished by
+  hand, say), or `pgc migrate resolve <file> retry` to run it again from the
+  top. Write such files to be safe to repeat where you can, and after a
+  failed `CREATE INDEX CONCURRENTLY` drop the invalid index it leaves before
+  retrying.
+- **Applied means immutable.** Every file's SHA-256 is recorded. An applied
+  file that changed since, or disappeared, stops the run: put the file back
+  as it was applied and write the next migration instead. `-allow-drift`
+  applies the pending files anyway and reports the difference as warnings.
+- **Every file starts from the same session.** Before each file the session
+  is reset (`RESET ALL`, `RESET ROLE`, `search_path` set to `public`), so a
+  `SET search_path` or `SET ROLE` in one file does not reach the next.
+  Schema-qualify names that matter.
 - **Forward only.** There are no down migrations by design: undoing a
   change is a new migration (or a restore from backup), which is what
   actually happens to production databases.
-- **Concurrent runs queue.** The whole run holds a PostgreSQL advisory
-  lock, so two CI jobs migrating at once cannot interleave.
+- **Concurrent runs queue.** The whole run holds a PostgreSQL advisory lock
+  (called schema-qualified, so no function on the search path can stand in
+  for it), so two CI jobs migrating at once cannot interleave. The second
+  waits up to `-lock-timeout` (10 minutes by default; 0 waits for as long as
+  it takes).
+- **Interruptible.** A statement may run as long as it needs - there is no
+  per-statement deadline - but Ctrl-C, SIGTERM or `-timeout` cancel it on the
+  server, the transaction rolls back and the lock is released.
 - **Out-of-order files apply with a warning** - the usual merged-branch
   case where `002_` landed before `001_` from another branch.
 
-Adopting pgc migrate on a database that already has its schema: record the
-existing files as applied without running them, once, by hand:
+`pgc migrate status` only reads - on a database pgc has never migrated it
+creates nothing - and prints every file as `applied`, `pending`, `changed`
+(edited since it was applied), `missing` (applied, file gone), `started` or
+`failed`. It exits non-zero when any needs attention, so CI can gate on it.
 
-```sql
-INSERT INTO pgc_migrations (name, hash)
-VALUES ('001_init.sql', 'adopted');
-```
+Adopting pgc migrate on a database that already has its schema:
+`pgc migrate baseline 003_orders.sql` records every file up to and including
+`003_orders.sql` as applied, with their real checksums, without running them.
+It only starts an empty history. (Rows written by hand with the hash
+`adopted`, as earlier versions of this document advised, keep working.)
 
-(The hash mismatch warning will remind you which files were adopted.)
+Migrations are trusted code that runs with the rights of the migrating role.
+Give that role the DDL rights it needs and no more, keep it apart from the
+role the application runs as, and protect `public.pgc_migrations` from writes
+by anyone else.
 
 ## Generating without a database
 
@@ -157,11 +218,16 @@ The migration files are fingerprinted too. Those change without any query
 changing, so a difference there is a warning rather than a refusal - the
 schema may be exactly right, and nothing offline can tell.
 
-`pgc verify` is the other half, for CI with a database:
+`pgc verify` is the other half, for CI with a database. It checks the
+contract the queries depend on - every recorded parameter and column type,
+the nullability and the tables behind them - not the whole schema: an index,
+a constraint, a trigger or a permission that no query's types depend on is
+outside what it sees, and it does not look at `pgc_migrations` (that is
+`pgc migrate status`):
 
 ```
 $ pgc verify
-ok: pgc.lock.json matches the database (12 queries, 4 tables)
+ok: the query types in pgc.lock.json match the database (12 queries, 4 tables)
 
 $ pgc verify                      # after someone forgot to regenerate
   queries/articles.sql: CountArticles has different SQL
@@ -274,6 +340,13 @@ explicit Go type is taken verbatim (its nullability included); a bare
 An override that names a column or parameter the statement does not have is
 an error - typos never pass silently.
 
+An override always shapes the result. A query that selects a table's full
+column set normally returns the table's model struct, which every query of the
+table shares; when an override changes one of those columns' types - the usual
+`nullable` on the inner side of a `LEFT JOIN` - the query gets a row struct of
+its own instead. Inside an `embed` the shared struct is unavoidable, so such an
+override there is an error.
+
 A Go type from another module is written with its full import path:
 
 ```sql
@@ -308,6 +381,10 @@ usual. The same form works in the `types` map of the configuration.
   }
 }
 ```
+
+Unknown keys are errors, so a misspelt option cannot leave its default in
+force. Relative directories are resolved against the working directory pgc
+runs in, not the location of the configuration file.
 
 - **queries** - the directory with the `.sql` files.
 - **migrations** - the directory `pgc migrate` applies.
@@ -513,9 +590,8 @@ Most jobs need no database at all - they generate from the committed
 `pgc.lock.json`:
 
 ```sh
-go install github.com/goloop/pgc@v0.7.0   # pin the tool (and pin Go in CI)
-pgc generate
-git diff --exit-code   # fails when the committed code drifted
+go install github.com/goloop/pgc@v0.9.0   # pin the tool (and pin Go in CI)
+pgc check              # fails when the committed package differs from the queries
 ```
 
 One job should have a database, to prove the record is still true:
@@ -523,15 +599,19 @@ One job should have a database, to prove the record is still true:
 ```sh
 docker run -d --name ci-pg -e POSTGRES_PASSWORD=ci -p 5432:5432 postgres:17-alpine
 export PGC_DATABASE_URL="postgres://postgres:ci@localhost:5432/postgres?sslmode=disable"
-go install github.com/goloop/pgc@v0.7.0
+go install github.com/goloop/pgc@v0.9.0
 pgc migrate
+pgc migrate status     # fails when the history needs attention
 pgc verify             # fails when pgc.lock.json and the schema disagree
 ```
 
 Pin both the pgc version and the Go toolchain version in CI, and install
 once rather than `go run` per step - builds stay reproducible and fast.
-`pgc check` does the same compilation without writing, when only validation
-is wanted.
+`pgc check` compiles every query exactly as `pgc generate` does and compares
+the result with the output directory, file by file - including files pgc
+generated earlier for query files that are gone, which `generate` removes. It
+writes nothing and fails on any difference. It does not type-check the
+generated package; `go build ./...` and your tests do that.
 
 ## Scope
 
@@ -543,4 +623,8 @@ stays yours.
 Known limits: multidimensional arrays and NULL elements inside arrays are
 rejected (map such columns to plain `string` with an override); view columns
 have no `attnotnull` in the catalog, so they come out nullable unless
-overridden; batch statements and COPY are not generated.
+overridden; batch statements and COPY are not generated. In a migration file,
+`COPY ... FROM STDIN` fails at once - pgc has no data to send - so load data
+with `INSERT` or a server-side `COPY ... FROM 'file'`; `COPY ... TO STDOUT`
+output is discarded. pgc reads query results only for its own lookups and
+refuses one larger than 64 MiB; rows a migration returns are read and dropped.

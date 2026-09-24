@@ -5,6 +5,97 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-09-24
+
+Minor release: migrations refuse what they cannot apply safely, generated code
+keeps SQL and data apart, and the wire client no longer trusts a connection or
+a server more than it has shown it can be trusted.
+
+### Security
+- **A parameter could become the SQL text.** A query parameter named like the
+  query's own constant (`-- name: Put` with `@put`) shadowed it inside the
+  generated method, which compiled and handed the caller's value to the driver
+  as the statement. Parameter names are now allocated against every identifier
+  a method refers to: the SQL constant, the array adapters, the packages and
+  predeclared types its signature and body spell. Regenerate packages built by
+  earlier versions.
+- SCRAM authentication must run to a verified server signature: a server that
+  skipped the challenge, or answered with an empty signature, was accepted.
+- A clear-text password is refused over an unencrypted connection to another
+  machine.
+- A URL whose parameters do not decode is an error; a garbled
+  `sslmode=verify-full` used to become the default `prefer`. Parameters that
+  ask for a protection pgc does not provide (`sslcert`, `sslkey`, `sslcrl`,
+  `channel_binding=require`, `gssencmode=require`, `require_auth`) are errors
+  rather than ignored, and no error repeats the URL with its password.
+- The migration advisory lock is called schema-qualified with a `bigint`
+  argument, so a `pg_advisory_lock(integer)` on the search path can no longer
+  stand in for it and let two runs in at once.
+
+### Fixed
+- `pgc migrate -c pgc.json status` applied the pending migrations: only a
+  leading `status` was recognised. Subcommands (`up`, `status`, `resolve`,
+  `baseline`) are now parsed strictly, flags may come before or after them,
+  and every argument is checked before connecting.
+- A `ROLLBACK` or `COMMIT` in a migration file broke the atomicity of the file
+  and its history row - a rolled-back file was recorded as applied. Transaction
+  control in a transactional file is now refused before anything runs, and a
+  file that ends the transaction some other way is not recorded.
+- A no-transaction file that failed part way was retried from the top on the
+  next run, repeating the statements that had succeeded. It is now recorded as
+  `started` before its first statement and `failed` on an error, and either
+  mark stops later runs until `pgc migrate resolve <file> applied|retry`.
+- A `SET search_path` (or `SET ROLE`) in one migration file carried over into
+  the next. Every file now starts from a reset session.
+- After a timeout the next request on the same connection could read the
+  timed-out request's answer. A timeout, a transport error or an unknown
+  message now closes the connection.
+- `COPY ... FROM STDIN` in a migration hung until a timeout, and without one
+  forever; it now fails at once. `COPY ... TO STDOUT` output is discarded.
+- Closing a connection could block on a peer that stopped reading.
+- Passwords are prepared with SASLprep, as the server prepares them, so a
+  password with a soft hyphen or a no-break space authenticates. Unicode
+  normalization is the one step left out.
+- A query that selects a table's full column set but overrides a column's
+  type (`nullable` on the inner side of a `LEFT JOIN`) reused the table's
+  model and dropped the override; it now gets a row struct of its own. The
+  same override inside an `embed` is an error.
+- Text array elements lost leading and trailing newlines, carriage returns and
+  form feeds on the way to the server. Every element is now quoted; a NUL byte,
+  which PostgreSQL text cannot hold, is an error.
+- `generate` left behind the files of query files that were deleted or
+  renamed; they are now removed. Only files carrying pgc's header are ever
+  touched.
+- `pgc version`, and the `pgc` field of `pgc.lock.json`, report the tag the
+  binary was installed from, read from the build info. The version string was
+  a constant edited by hand and had stayed at 0.7.5 since that release.
+
+### Changed
+- **An applied migration that changed or disappeared stops the run** instead
+  of producing a warning. `-allow-drift` applies the pending files anyway.
+- **`pgc migrate status` only reads**, reports `changed`, `missing`, `started`
+  and `failed` files alongside `applied` and `pending`, and exits non-zero when
+  any needs attention. It no longer creates the history table.
+- **`pgc check` compares with the output directory**, failing when a
+  generated file differs, is missing or is stale, instead of only compiling.
+- **Unknown keys in `pgc.json` are errors.**
+- The migration lock waits at most `-lock-timeout` (10 minutes by default).
+  Ctrl-C, SIGTERM and `-timeout` cancel the statement in flight on the server.
+- The history table gains a `state` column, added on the first run of this
+  version. Commands that connect print the target database, without the
+  password.
+- Generated files and `pgc.lock.json` are replaced atomically.
+- Migration scripts run without keeping their rows; pgc's own lookups refuse a
+  result above 64 MiB.
+- `connect_timeout` in the URL is honoured.
+
+### Added
+- `pgc migrate baseline <last-file>` records the files up to it as applied,
+  with their checksums, for a database whose schema they already describe. It
+  replaces inserting `adopted` rows by hand (such rows keep working).
+- `pgc migrate resolve <file> applied|retry` settles a no-transaction file left
+  unfinished.
+
 ## [0.8.2] - 2026-09-20
 
 Patch release: a parameter named like the generated method body compiles.
