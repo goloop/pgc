@@ -492,3 +492,53 @@ func TestSelectorForCollisionAndSanitize(t *testing.T) {
 		t.Error("dashed import not aliased")
 	}
 }
+
+// TestOverrideRulesOutTheModel checks an override that changes a column's type
+// is honoured even when the query selects a table's full column set. The model
+// is shared by every query of the table and keeps the catalog's types, so
+// reusing it would silently drop the override: a NULL from the inner side of a
+// LEFT JOIN would then arrive in a field that cannot hold one.
+func TestOverrideRulesOutTheModel(t *testing.T) {
+	sql := "SELECT u.id, u.email, u.bio FROM posts p LEFT JOIN users u ON true"
+	cols := []pgwire.Column{
+		usersCol(1, "id", 20), usersCol(2, "email", 25), usersCol(3, "bio", 25),
+	}
+
+	generate := func(t *testing.T, annotation string) string {
+		t.Helper()
+		dir := writeQueries(t, "-- name: Joined :one\n"+annotation+sql+";\n")
+		db := &fakeDB{statements: map[string]*pgwire.Statement{
+			sql: {Columns: cols},
+		}}
+		res, err := Run(db, testConfig(dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range res.Files {
+			if f.Name == "users.sql.go" {
+				return string(f.Data)
+			}
+		}
+		t.Fatal("no users.sql.go")
+		return ""
+	}
+
+	src := generate(t, "-- override: id nullable\n-- override: email nullable\n")
+	for _, want := range []string{
+		"type JoinedRow struct {",
+		"ID    *int64",
+		"Email *string",
+		"(JoinedRow, error)",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("missing %q:\n%s", want, src)
+		}
+	}
+
+	// An override that leaves the type as the model has it changes nothing,
+	// and the model is still the result.
+	src = generate(t, "-- override: bio nullable\n")
+	if !strings.Contains(src, "(User, error)") || strings.Contains(src, "JoinedRow") {
+		t.Errorf("a no-op override should keep the model:\n%s", src)
+	}
+}

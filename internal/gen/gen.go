@@ -459,10 +459,9 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 		"ctx": true, "row": true, "rows": true, "res": true,
 		"err": true, "arg": true, "q": true,
 	}
-	var argNames []string
-	for _, p := range q.Params {
-		argNames = append(argNames, in.Namer.paramName(p.Name))
-		taken[in.Namer.paramName(p.Name)] = true
+	argNames := in.Namer.paramNames(q)
+	for _, name := range argNames {
+		taken[name] = true
 	}
 
 	// The argument list of the call site; array parameters ride their

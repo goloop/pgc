@@ -383,3 +383,27 @@ func TestQuerierImportsOnlySignatureTypes(t *testing.T) {
 		}
 	}
 }
+
+// An override on a column of an embedded table would be lost inside the shared
+// model struct, so it is refused with a way out rather than dropped.
+func TestEmbedRefusesATypeChangingOverride(t *testing.T) {
+	sql := "SELECT o.id, o.user_id, u.id, u.email, u.tags " +
+		"FROM orders o LEFT JOIN users u ON u.id = o.user_id"
+	dir := writeQueries(t, `-- name: OrdersWithUser :many
+-- embed: public.users as Buyer
+-- override: email nullable
+`+sql+`;
+`)
+	db := &featuresDB{statements: map[string]*pgwire.Statement{
+		sql: {Columns: append(
+			[]pgwire.Column{col(200, 1, "id", 20), col(200, 2, "user_id", 20)},
+			usersFull(100)...)},
+	}}
+	_, err := Run(db, testConfig(dir))
+	if err == nil || !strings.Contains(err.Error(), "override") {
+		t.Fatalf("err = %v, want the embed refused over the override", err)
+	}
+	if !strings.Contains(err.Error(), "shared User struct") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

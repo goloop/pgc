@@ -1,6 +1,7 @@
 package gen
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -173,6 +174,64 @@ func (n *Namer) paramName(s string) string {
 		return name + "_"
 	}
 	return name
+}
+
+// paramNames allocates the Go names of a query's parameters. A parameter is a
+// local variable of the generated method, so it shadows any package-level name
+// the body refers to - and a shadowed name can still compile. The worst case
+// is the query's own SQL constant: a parameter spelled like it would hand the
+// caller's value to the driver as the statement text. Every identifier the
+// method refers to is therefore reserved before a parameter may take it: the
+// SQL constant, the adapter types, each name spelled in a parameter or result
+// type, and Go's predeclared identifiers.
+func (n *Namer) paramNames(q Query) []string {
+	taken := map[string]bool{lowerFirst(q.Name): true}
+	for name := range bodyIdents {
+		taken[name] = true
+	}
+	for name := range predeclared {
+		taken[name] = true
+	}
+	for _, name := range []string{"context", "iter"} {
+		taken[name] = true
+	}
+	reserveTypeIdents := func(expr string) {
+		for _, id := range typeIdentRe.FindAllString(expr, -1) {
+			taken[id] = true
+		}
+	}
+	reserveTypeIdents(q.Ret.Type)
+	reserveTypeIdents(q.Ret.Helper)
+	for _, p := range q.Params {
+		reserveTypeIdents(p.Type)
+		reserveTypeIdents(p.Helper)
+	}
+
+	names := make([]string, len(q.Params))
+	for i, p := range q.Params {
+		names[i] = unique(n.paramName(p.Name), taken)
+	}
+	return names
+}
+
+// typeIdentRe matches the identifiers inside a Go type expression:
+// *time.Time yields time and Time.
+var typeIdentRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+
+// predeclared are Go's predeclared identifiers. A parameter may not take one:
+// the generated body spells error, nil and append, and a result type may be
+// any of the basic types.
+var predeclared = map[string]bool{
+	"any": true, "bool": true, "byte": true, "comparable": true,
+	"complex64": true, "complex128": true, "error": true, "float32": true,
+	"float64": true, "int": true, "int8": true, "int16": true, "int32": true,
+	"int64": true, "rune": true, "string": true, "uint": true, "uint8": true,
+	"uint16": true, "uint32": true, "uint64": true, "uintptr": true,
+	"true": true, "false": true, "iota": true, "nil": true,
+	"append": true, "cap": true, "clear": true, "close": true,
+	"complex": true, "copy": true, "delete": true, "imag": true, "len": true,
+	"make": true, "max": true, "min": true, "new": true, "panic": true,
+	"print": true, "println": true, "real": true, "recover": true,
 }
 
 // bodyIdents are the identifiers every generated method declares itself; a

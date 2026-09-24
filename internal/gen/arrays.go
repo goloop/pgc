@@ -64,8 +64,12 @@ var arrayKinds = map[string]arrayKind{
 	},
 	"stringArray": {
 		elem: "string", pg: "text-like[]",
-		parse:  `		out[i] = e`,
-		format: `		parts[i] = pgQuoteElem(v)`,
+		parse: `		out[i] = e`,
+		format: `		if strings.IndexByte(v, 0) >= 0 {
+			return nil, fmt.Errorf(
+				"stringArray: element %d holds a NUL byte, which PostgreSQL text cannot store", i)
+		}
+		parts[i] = pgQuoteElem(v)`,
 	},
 }
 
@@ -231,15 +235,13 @@ func pgArrayElems(src any, who string) ([]string, error) {
 	return elems, nil
 }
 
-// pgQuoteElem renders one string element of an array literal, quoting it
-// whenever the raw form would be ambiguous.
+// pgQuoteElem renders one string element of an array literal. Every element
+// is quoted: unquoted, the server trims surrounding whitespace - newlines and
+// form feeds included - and reads NULL as a null, so only the quoted form
+// carries the bytes through unchanged.
 func pgQuoteElem(s string) string {
-	plain := s != "" && !strings.EqualFold(s, "null") &&
-		!strings.ContainsAny(s, "{},\"\\ \t")
-	if plain {
-		return s
-	}
 	var b strings.Builder
+	b.Grow(len(s) + 2)
 	b.WriteByte('"')
 	for i := 0; i < len(s); i++ {
 		if s[i] == '"' || s[i] == '\\' {

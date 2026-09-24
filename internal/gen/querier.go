@@ -67,11 +67,7 @@ type Querier interface {
 // querierParams renders a query's parameter list after ctx, matching the
 // generated method exactly.
 func querierParams(n *Namer, q Query) string {
-	var names []string
-	for _, p := range q.Params {
-		names = append(names, n.paramName(p.Name))
-	}
-	return signatureParams(q.Params, names, q.UsesParamStruct(), q.Name)
+	return signatureParams(q.Params, n.paramNames(q), q.UsesParamStruct(), q.Name)
 }
 
 // resultOf renders a query's result list.

@@ -387,7 +387,17 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 			if err != nil {
 				return gen.Ret{}, err
 			}
-			return gen.Ret{Kind: gen.RetModel, Type: model.Name, Fields: fields}, nil
+			fits, err := c.overridesFit(q, cols, 0, fields)
+			if err != nil {
+				return gen.Ret{}, err
+			}
+			// An override that changes a column's type - "nullable" on the
+			// inner side of a LEFT JOIN, say - rules the table's model out:
+			// the query then gets a row struct of its own that says what it
+			// actually returns.
+			if fits {
+				return gen.Ret{Kind: gen.RetModel, Type: model.Name, Fields: fields}, nil
+			}
 		}
 	}
 
@@ -414,6 +424,17 @@ func (c *compiler) compileRet(q qfQuery, st *pgwire.Statement) (gen.Ret, error) 
 				model, children, err := c.selectOrderedFields(cols[i:i+n], table)
 				if err != nil {
 					return gen.Ret{}, err
+				}
+				fits, err := c.overridesFit(q, cols, i, children)
+				if err != nil {
+					return gen.Ret{}, err
+				}
+				if !fits {
+					return gen.Ret{}, fmt.Errorf(
+						"embed %s: an override changes the type of one of its "+
+							"columns, which the shared %s struct cannot carry; "+
+							"select the columns without the embed to get a row "+
+							"struct of their own", embeds[0].Table, model.Name)
 				}
 				goName := embeds[0].As
 				if goName == "" {
@@ -533,6 +554,29 @@ func (c *compiler) selectOrderedFields(
 		fields = append(fields, byName[col.Name])
 	}
 	return model, fields, nil
+}
+
+// overridesFit reports whether the query's overrides leave the columns
+// cols[from:from+len(fields)] typed exactly as the model fields they would
+// scan into. A model is shared by every query of its table, so it can only
+// be reused when the query asks nothing different of it.
+func (c *compiler) overridesFit(
+	q qfQuery, cols []pgwire.Column, from int, fields []gen.Field,
+) (bool, error) {
+	for k, f := range fields {
+		col := cols[from+k]
+		if overrideForColumn(q, col.Name) == nil {
+			continue
+		}
+		expr, helper, err := c.columnType(q, col, from+k, len(cols))
+		if err != nil {
+			return false, err
+		}
+		if expr != f.Type || helper != f.Helper {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // modelFor returns (building on first use) the model struct of a table.
