@@ -72,7 +72,7 @@ func (s *scramClient) clientFinal(serverFirst []byte) ([]byte, error) {
 		return nil, fmt.Errorf("pgwire: scram: server nonce does not extend ours")
 	}
 
-	salted, err := pbkdf2.Key(sha256.New, s.password, salt, iters, sha256.Size)
+	salted, err := pbkdf2.Key(sha256.New, saslPrep(s.password), salt, iters, sha256.Size)
 	if err != nil {
 		return nil, fmt.Errorf("pgwire: scram: %w", err)
 	}
@@ -100,6 +100,9 @@ func (s *scramClient) clientFinal(serverFirst []byte) ([]byte, error) {
 // verifyServer checks the server-final-message signature, proving the server
 // also knows the password derivative.
 func (s *scramClient) verifyServer(serverFinal []byte) error {
+	if len(s.serverSignature) != sha256.Size {
+		return fmt.Errorf("pgwire: scram: server-final before the server-first exchange")
+	}
 	msg := string(serverFinal)
 	if strings.HasPrefix(msg, "e=") {
 		return fmt.Errorf("pgwire: scram: server error: %s", msg[2:])
@@ -112,21 +115,29 @@ func (s *scramClient) verifyServer(serverFinal []byte) error {
 	if err != nil {
 		return fmt.Errorf("pgwire: scram: server signature: %w", err)
 	}
-	if !hmac.Equal(sig, s.serverSignature) {
+	if len(sig) != sha256.Size || !hmac.Equal(sig, s.serverSignature) {
 		return fmt.Errorf("pgwire: scram: server signature mismatch")
 	}
 	return nil
 }
 
 // parseServerFirst extracts the nonce, salt and iteration count from
-// "r=...,s=...,i=..." (any further extensions are ignored).
+// "r=...,s=...,i=...". A repeated attribute and the mandatory-extension
+// attribute m are refused; any other extension is ignored, as RFC 5802 asks.
 func parseServerFirst(msg string) (nonce string, salt []byte, iters int, err error) {
+	seen := map[string]bool{}
 	for _, part := range strings.Split(msg, ",") {
 		k, v, ok := strings.Cut(part, "=")
 		if !ok {
 			continue
 		}
+		if seen[k] {
+			return "", nil, 0, fmt.Errorf("pgwire: scram: repeated attribute %q", k)
+		}
+		seen[k] = true
 		switch k {
+		case "m":
+			return "", nil, 0, fmt.Errorf("pgwire: scram: unsupported mandatory extension")
 		case "r":
 			nonce = v
 		case "s":

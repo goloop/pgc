@@ -27,6 +27,9 @@ type Statement struct {
 // all type inference; a query that would not run comes back as *ServerError
 // with the exact position of the problem.
 func (c *Conn) Describe(query string) (*Statement, error) {
+	if err := c.usable(); err != nil {
+		return nil, err
+	}
 	c.begin()
 	defer c.done()
 
@@ -35,21 +38,21 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 	parse.cstring(query)
 	parse.int16(0) // no pre-specified parameter types
 	if err := c.send('P', parse); err != nil {
-		return nil, err
+		return nil, c.fail(err)
 	}
 
 	var describe writeBuf
 	describe = append(describe, 'S') // describe a statement
 	describe.cstring("")
 	if err := c.send('D', describe); err != nil {
-		return nil, err
+		return nil, c.fail(err)
 	}
 
 	if err := c.send('S', nil); err != nil { // Sync
-		return nil, err
+		return nil, c.fail(err)
 	}
 	if err := c.w.Flush(); err != nil {
-		return nil, err
+		return nil, c.fail(err)
 	}
 
 	st := &Statement{}
@@ -57,7 +60,7 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 	for {
 		typ, payload, err := c.recv()
 		if err != nil {
-			return nil, err
+			return nil, c.fail(err)
 		}
 		switch typ {
 		case '1': // ParseComplete
@@ -65,21 +68,21 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 			r := &readBuf{b: payload}
 			n := int(r.int16())
 			if n < 0 {
-				return nil, fmt.Errorf(
-					"pgwire: ParameterDescription with negative count %d", n)
+				return nil, c.fail(fmt.Errorf(
+					"pgwire: ParameterDescription with negative count %d", n))
 			}
 			for range n {
 				st.ParamOIDs = append(st.ParamOIDs, uint32(r.int32()))
 			}
 			if r.err != nil {
-				return nil, r.err
+				return nil, c.fail(r.err)
 			}
 		case 'T': // RowDescription
 			r := &readBuf{b: payload}
 			n := int(r.int16())
 			if n < 0 {
-				return nil, fmt.Errorf(
-					"pgwire: RowDescription with negative count %d", n)
+				return nil, c.fail(fmt.Errorf(
+					"pgwire: RowDescription with negative count %d", n))
 			}
 			for range n {
 				col := Column{Name: r.cstring()}
@@ -92,17 +95,27 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 				st.Columns = append(st.Columns, col)
 			}
 			if r.err != nil {
-				return nil, r.err
+				return nil, c.fail(r.err)
 			}
 		case 'n': // NoData - statement returns no rows
 		case 'E':
-			srvErr = parseServerError(payload)
-		case 'N': // NoticeResponse
+			if srvErr == nil {
+				srvErr = parseServerError(payload)
+			}
+		case 'N', 'A': // NoticeResponse, NotificationResponse
+		case 'S':
+			c.parameterStatus(payload)
 		case 'Z': // ReadyForQuery - conversation over
+			if err := c.ready(payload); err != nil {
+				return nil, err
+			}
 			if srvErr != nil {
 				return nil, srvErr
 			}
 			return st, nil
+		default:
+			return nil, c.fail(fmt.Errorf(
+				"pgwire: unexpected message %q in a describe response", typ))
 		}
 	}
 }

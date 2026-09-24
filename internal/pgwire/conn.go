@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -34,6 +35,76 @@ type Conn struct {
 	// params holds the ParameterStatus values the server reported during
 	// startup (server_version, client_encoding and friends).
 	params map[string]string
+
+	// cfg is kept for Cancel, which reaches the server on a connection of
+	// its own; pid and secret are the BackendKeyData that identify this
+	// session to it.
+	cfg    Config
+	pid    int32
+	secret int32
+
+	// secure is set when the connection runs over TLS.
+	secure bool
+
+	// txStatus is the transaction status of the last ReadyForQuery: 'I'
+	// idle, 'T' in a transaction block, 'E' in a failed one.
+	txStatus byte
+
+	// broken is set once the connection can no longer be trusted to be in
+	// step with the server; every later request returns it.
+	broken error
+}
+
+// errClosed is what a request on a closed connection returns.
+var errClosed = errors.New("pgwire: connection closed")
+
+// usable returns why the connection cannot take another request, if it
+// cannot.
+func (c *Conn) usable() error {
+	if c.broken != nil {
+		return fmt.Errorf("pgwire: connection unusable after an earlier "+
+			"failure: %w", c.broken)
+	}
+	return nil
+}
+
+// fail marks the connection broken and closes the socket. It is for errors
+// after which an unknown part of the server's answer may still be on the
+// wire - a timeout, a transport error, a message out of protocol - so the
+// next request cannot be allowed to read it as its own.
+func (c *Conn) fail(err error) error {
+	if c.broken == nil {
+		c.broken = err
+		c.conn.Close()
+	}
+	return err
+}
+
+// ready records the transaction status a ReadyForQuery carries.
+func (c *Conn) ready(payload []byte) error {
+	if len(payload) != 1 {
+		return c.fail(fmt.Errorf("pgwire: malformed ReadyForQuery"))
+	}
+	switch payload[0] {
+	case 'I', 'T', 'E':
+		c.txStatus = payload[0]
+		return nil
+	}
+	return c.fail(fmt.Errorf("pgwire: unknown transaction status %q", payload[0]))
+}
+
+// TxStatus reports the transaction status after the last request: 'I' idle,
+// 'T' inside a transaction block, 'E' inside a failed one.
+func (c *Conn) TxStatus() byte { return c.txStatus }
+
+// parameterStatus records a ParameterStatus message; the server sends one
+// at startup and again whenever a reported setting changes.
+func (c *Conn) parameterStatus(payload []byte) {
+	r := &readBuf{b: payload}
+	k, v := r.cstring(), r.cstring()
+	if r.err == nil {
+		c.params[k] = v
+	}
 }
 
 // SetOpTimeout changes the per-operation deadline; 0 disables it entirely
@@ -46,6 +117,12 @@ func (c *Conn) SetOpTimeout(d time.Duration) {
 // waits for the server to become ready. The context bounds the whole startup
 // sequence.
 func Dial(ctx context.Context, cfg Config) (*Conn, error) {
+	if cfg.ConnectTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.ConnectTimeout)
+		defer cancel()
+	}
+
 	d := net.Dialer{}
 	raw, err := d.DialContext(ctx, "tcp", cfg.addr())
 	if err != nil {
@@ -58,11 +135,16 @@ func Dial(ctx context.Context, cfg Config) (*Conn, error) {
 	}
 	raw.SetDeadline(deadline)
 
+	// A cancelled context ends the startup at once, not at the deadline.
+	stop := context.AfterFunc(ctx, func() { raw.SetDeadline(time.Now()) })
+	defer stop()
+
 	secured, err := negotiateTLS(raw, cfg)
 	if err != nil {
 		raw.Close()
 		return nil, err
 	}
+	_, isTLS := secured.(*tls.Conn)
 	raw = secured
 
 	c := &Conn{
@@ -71,10 +153,19 @@ func Dial(ctx context.Context, cfg Config) (*Conn, error) {
 		w:         bufio.NewWriter(raw),
 		opTimeout: opTimeout,
 		params:    map[string]string{},
+		cfg:       cfg,
+		secure:    isTLS,
 	}
 	if err := c.startup(cfg); err != nil {
 		raw.Close()
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("pgwire: startup: %w", ctx.Err())
+		}
 		return nil, err
+	}
+	if !stop() {
+		raw.Close()
+		return nil, fmt.Errorf("pgwire: startup: %w", ctx.Err())
 	}
 	raw.SetDeadline(time.Time{})
 	return c, nil
@@ -86,11 +177,62 @@ func (c *Conn) Parameter(name string) string {
 	return c.params[name]
 }
 
-// Close sends Terminate and closes the connection.
+// closeTimeout bounds the goodbye: Close does not wait on a peer that has
+// stopped reading.
+var closeTimeout = 2 * time.Second
+
+// Close sends Terminate and closes the connection. It returns within
+// closeTimeout whatever the peer does.
 func (c *Conn) Close() error {
+	if c.broken != nil {
+		return nil // fail already closed the socket
+	}
+	c.broken = errClosed
+	c.conn.SetDeadline(time.Now().Add(closeTimeout))
 	c.send('X', nil)
 	c.w.Flush()
 	return c.conn.Close()
+}
+
+// Cancel asks the server to abandon whatever this connection is running,
+// the way an interrupted psql does: over a separate connection carrying the
+// session's cancellation key. It may be called from another goroutine while
+// a request is in flight; that request then returns the server's
+// "canceling statement" error and the connection stays usable. Like every
+// cancel request, it is advisory - the server may have finished already.
+func (c *Conn) Cancel(ctx context.Context) error {
+	if c.pid == 0 {
+		return fmt.Errorf("pgwire: cancel: the server sent no cancellation key")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	d := net.Dialer{}
+	raw, err := d.DialContext(ctx, "tcp", c.cfg.addr())
+	if err != nil {
+		return fmt.Errorf("pgwire: cancel: %w", err)
+	}
+	defer raw.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		raw.SetDeadline(dl)
+	}
+	conn, err := negotiateTLS(raw, c.cfg)
+	if err != nil {
+		return fmt.Errorf("pgwire: cancel: %w", err)
+	}
+	var req [16]byte
+	binary.BigEndian.PutUint32(req[0:], 16)
+	binary.BigEndian.PutUint32(req[4:], 80877102) // CancelRequest code
+	binary.BigEndian.PutUint32(req[8:], uint32(c.pid))
+	binary.BigEndian.PutUint32(req[12:], uint32(c.secret))
+	if _, err := conn.Write(req[:]); err != nil {
+		return fmt.Errorf("pgwire: cancel: %w", err)
+	}
+	// The server answers by closing the connection; waiting for that makes
+	// sure the request was read before Cancel returns.
+	var one [1]byte
+	conn.Read(one[:])
+	return nil
 }
 
 // begin arms the per-operation deadline; done disarms it. A zero opTimeout
@@ -248,7 +390,14 @@ func (c *Conn) startup(cfg Config) error {
 		return err
 	}
 
-	var scram *scramClient
+	// auth tracks the authentication exchange, so a server - or whoever
+	// sits between pgc and it - cannot skip a step: SCRAM is only complete
+	// once the server has proved it knows the password too.
+	var (
+		scram     *scramClient
+		scramStep int // 1 sent client-first, 2 sent client-final, 3 verified
+		authDone  bool
+	)
 	for {
 		typ, payload, err := c.recv()
 		if err != nil {
@@ -263,9 +412,24 @@ func (c *Conn) startup(cfg Config) error {
 				// misread as AuthenticationOk. Reject it instead.
 				return fmt.Errorf("pgwire: truncated authentication message")
 			}
+			if authDone {
+				return fmt.Errorf("pgwire: authentication message after " +
+					"authentication completed")
+			}
 			switch code {
 			case 0: // AuthenticationOk
+				if scram != nil && scramStep != 3 {
+					return fmt.Errorf("pgwire: the server ended SCRAM " +
+						"authentication without proving it knows the password")
+				}
+				authDone = true
 			case 3: // CleartextPassword
+				if !c.secure && !isLoopback(cfg.Host) {
+					return fmt.Errorf("pgwire: the server asked for the " +
+						"password in clear text over an unencrypted " +
+						"connection; use TLS (sslmode=require or stronger) " +
+						"or SCRAM authentication")
+				}
 				var b writeBuf
 				b.cstring(cfg.Password)
 				if err := c.sendFlush('p', b); err != nil {
@@ -282,6 +446,9 @@ func (c *Conn) startup(cfg Config) error {
 					return err
 				}
 			case 10: // SASL: pick SCRAM-SHA-256
+				if scram != nil {
+					return fmt.Errorf("pgwire: SASL started twice")
+				}
 				var mechs []string
 				for {
 					m := r.cstring()
@@ -298,6 +465,7 @@ func (c *Conn) startup(cfg Config) error {
 				if err != nil {
 					return err
 				}
+				scramStep = 1
 				first := scram.clientFirst()
 				var b writeBuf
 				b.cstring("SCRAM-SHA-256")
@@ -307,9 +475,10 @@ func (c *Conn) startup(cfg Config) error {
 					return err
 				}
 			case 11: // SASLContinue
-				if scram == nil {
-					return fmt.Errorf("pgwire: SASL continue before SASL start")
+				if scram == nil || scramStep != 1 {
+					return fmt.Errorf("pgwire: SASL continue out of order")
 				}
+				scramStep = 2
 				final, err := scram.clientFinal(payload[4:])
 				if err != nil {
 					return err
@@ -318,31 +487,46 @@ func (c *Conn) startup(cfg Config) error {
 					return err
 				}
 			case 12: // SASLFinal
-				if scram == nil {
-					return fmt.Errorf("pgwire: SASL final before SASL start")
+				if scram == nil || scramStep != 2 {
+					return fmt.Errorf("pgwire: SASL final out of order")
 				}
 				if err := scram.verifyServer(payload[4:]); err != nil {
 					return err
 				}
+				scramStep = 3
 			default:
 				return fmt.Errorf("pgwire: unsupported authentication method %d", code)
 			}
 		case 'S': // ParameterStatus
+			c.parameterStatus(payload)
+		case 'K': // BackendKeyData - the key Cancel sends
 			r := &readBuf{b: payload}
-			k, v := r.cstring(), r.cstring()
-			if r.err == nil {
-				c.params[k] = v
+			c.pid, c.secret = r.int32(), r.int32()
+			if r.err != nil {
+				return r.err
 			}
-		case 'K': // BackendKeyData - cancellation keys, unused here
 		case 'N': // NoticeResponse
 		case 'E':
 			return parseServerError(payload)
 		case 'Z': // ReadyForQuery
-			return nil
+			if !authDone {
+				return fmt.Errorf("pgwire: server ready before authentication completed")
+			}
+			return c.ready(payload)
 		default:
 			return fmt.Errorf("pgwire: unexpected message %q during startup", typ)
 		}
 	}
+}
+
+// isLoopback reports whether host names this machine, where a password sent
+// in clear text never crosses a network.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // sendFlush sends one message and flushes the write buffer.
