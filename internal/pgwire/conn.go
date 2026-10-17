@@ -136,7 +136,8 @@ func Dial(ctx context.Context, cfg Config) (*Conn, error) {
 	raw.SetDeadline(deadline)
 
 	// A cancelled context ends the startup at once, not at the deadline.
-	stop := context.AfterFunc(ctx, func() { raw.SetDeadline(time.Now()) })
+	socket := raw
+	stop := context.AfterFunc(ctx, func() { socket.SetDeadline(time.Now()) })
 	defer stop()
 
 	secured, err := negotiateTLS(raw, cfg)

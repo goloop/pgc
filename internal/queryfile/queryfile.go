@@ -96,6 +96,7 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 	var queries []Query
 	var cur *Query
 	inBody := false
+	var body strings.Builder
 
 	flush := func() error {
 		if cur == nil {
@@ -107,7 +108,8 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 		// it comes before the next "-- name:". Drop those trailing standalone
 		// comment and blank lines so they do not ride inside the prepared
 		// statement. (A comment sharing a line with SQL keeps that SQL line.)
-		cur.SQL = dropTrailingComments(cur.SQL)
+		cur.SQL = dropTrailingComments(body.String())
+		body.Reset()
 		cur.SQL = strings.TrimSpace(cur.SQL)
 		cur.SQL = strings.TrimSuffix(cur.SQL, ";")
 		cur.SQL = strings.TrimRight(cur.SQL, " \t\n")
@@ -193,7 +195,8 @@ func ParseFile(path string, src []byte) ([]Query, error) {
 			continue
 		}
 		inBody = true
-		cur.SQL += line + "\n"
+		body.WriteString(line)
+		body.WriteByte('\n')
 	}
 	if err := flush(); err != nil {
 		return nil, err

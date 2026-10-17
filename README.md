@@ -1,4 +1,4 @@
-[![deps.dev](https://img.shields.io/badge/deps.dev-insights-4c8dbc)](https://deps.dev/go/github.com%2Fgoloop%2Fpgc) [![Go Reference](https://pkg.go.dev/badge/github.com/goloop/pgc.svg)](https://pkg.go.dev/github.com/goloop/pgc) [![License](https://img.shields.io/badge/license-MIT-brightgreen?style=flat)](https://github.com/goloop/pgc/blob/master/LICENSE) [![Stay with Ukraine](https://img.shields.io/static/v1?label=Stay%20with&message=Ukraine%20♥&color=ffD700&labelColor=0057B8&style=flat)](https://u24.gov.ua/)
+[![deps.dev](https://img.shields.io/badge/deps.dev-insights-4c8dbc)](https://deps.dev/go/github.com%2Fgoloop%2Fpgc) [![Go Reference](https://pkg.go.dev/badge/github.com/goloop/pgc.svg)](https://pkg.go.dev/github.com/goloop/pgc) [![License](https://img.shields.io/badge/license-MIT-brightgreen?style=flat)](https://github.com/goloop/pgc/blob/v1/LICENSE) [![Stay with Ukraine](https://img.shields.io/static/v1?label=Stay%20with&message=Ukraine%20♥&color=ffD700&labelColor=0057B8&style=flat)](https://u24.gov.ua/)
 
 # pgc
 
@@ -156,3 +156,7 @@ PGC_DATABASE_URL="postgres://postgres:test@127.0.0.1:55432/postgres?sslmode=disa
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+## Release v1.0.2
+
+Bound query result storage and timeouts, and build SQL without repeated copies.

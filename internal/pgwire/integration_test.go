@@ -206,3 +206,14 @@ func TestIntegrationTxStatus(t *testing.T) {
 		t.Fatalf("after ROLLBACK: %q", conn.TxStatus())
 	}
 }
+
+func TestIntegrationNullRowsRespectBudget(t *testing.T) {
+	conn, _ := dialIntegration(t)
+	if _, err := conn.Query("SELECT NULL::text FROM generate_series(1, 1500000)"); err == nil {
+		t.Fatal("empty values bypassed the result storage budget")
+	}
+	rows, err := conn.Query("SELECT 8")
+	if err != nil || len(rows) != 1 || rows[0][0].S != "8" {
+		t.Fatalf("connection after budget: %v, %v", rows, err)
+	}
+}

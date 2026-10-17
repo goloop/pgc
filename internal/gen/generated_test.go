@@ -96,6 +96,13 @@ func TestSQLNeverComesFromAnArgument(t *testing.T) {
 	}
 }
 
+func TestUnterminatedArrayQuote(t *testing.T) {
+ var out stringArray
+ if err := out.Scan("{\"broken}"); err == nil {
+  t.Fatal("accepted an unterminated quoted element")
+ }
+}
+
 func TestStringArrayKeepsEveryByte(t *testing.T) {
 	in := stringArray{"\nvalue\n", "\rv\r", "\vv\v", "\fv\f", " v ", "", "NULL",
 		"null", "a,b", "{x}", "q\"q", "b\\b", "юнікод"}

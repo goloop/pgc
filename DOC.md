@@ -656,3 +656,9 @@ overridden; batch statements and COPY are not generated. In a migration file,
 with `INSERT` or a server-side `COPY ... FROM 'file'`; `COPY ... TO STDOUT`
 output is discarded. pgc reads query results only for its own lookups and
 refuses one larger than 64 MiB; rows a migration returns are read and dropped.
+
+## Release v1.0.2
+
+Bound query result storage and timeouts, and build SQL without repeated copies.
+
+Generated array adapters reject unterminated quoted elements.

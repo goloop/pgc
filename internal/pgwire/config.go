@@ -3,6 +3,7 @@ package pgwire
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"strconv"
@@ -100,8 +101,8 @@ func ParseURL(dsn string) (Config, error) {
 	}
 	cfg.SSLRootCert = query.Get("sslrootcert")
 	if v := query.Get("connect_timeout"); v != "" {
-		secs, err := strconv.Atoi(v)
-		if err != nil || secs < 0 {
+		secs, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || secs < 0 || secs > math.MaxInt64/int64(time.Second) {
 			return Config{}, fmt.Errorf("pgwire: connect_timeout %q is not "+
 				"a number of seconds", v)
 		}

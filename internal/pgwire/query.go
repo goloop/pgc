@@ -127,7 +127,8 @@ func parseDataRow(payload []byte) ([]Value, int, error) {
 		return nil, 0, fmt.Errorf("pgwire: DataRow with negative field count %d", n)
 	}
 	row := make([]Value, 0, n)
-	size := 0
+	// Count row and value storage even when every field is empty or NULL.
+	size := 24 * (n + 1)
 	for range n {
 		length := int(r.int32())
 		switch {

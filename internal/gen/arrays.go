@@ -229,6 +229,9 @@ func pgArrayElems(src any, who string) ([]string, error) {
 			cur.WriteByte(c)
 		}
 	}
+	if quoted {
+		return nil, fmt.Errorf("%s: unterminated quoted array element", who)
+	}
 	if err := flush(); err != nil {
 		return nil, err
 	}
