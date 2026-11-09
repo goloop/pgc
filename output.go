@@ -39,6 +39,17 @@ func planOutput(dir string, files []gen.OutFile) (outputPlan, error) {
 		if err != nil && !os.IsNotExist(err) {
 			return plan, err
 		}
+		if err == nil && !bytes.Equal(old, f.Data) {
+			ours, err := isGenerated(filepath.Join(dir, f.Name))
+			if err != nil {
+				return plan, err
+			}
+			if !ours {
+				return plan, fmt.Errorf("%s exists and was not written by pgc; "+
+					"move it out of the output directory or remove it before "+
+					"generating", filepath.Join(dir, f.Name))
+			}
+		}
 		if err != nil || !bytes.Equal(old, f.Data) {
 			plan.write = append(plan.write, f)
 		}

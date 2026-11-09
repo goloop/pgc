@@ -315,3 +315,60 @@ func TestCloseDoesNotWaitOnADeadPeer(t *testing.T) {
 		t.Fatal("a closed connection accepted a request")
 	}
 }
+
+// A statement is described once; a peer that keeps sending descriptions
+// would otherwise grow the statement without bound.
+func TestDescribeRefusesASecondDescription(t *testing.T) {
+	c, s := pipeConns(t)
+	go func() {
+		for range 3 { // Parse, Describe, Sync
+			s.recv()
+		}
+		s.send('1', nil)
+		var b writeBuf
+		b.int16(0)
+		s.send('T', b)
+		s.send('T', b)
+		s.sendFlush('Z', []byte{'I'})
+	}()
+	if _, err := c.Describe("SELECT 1"); err == nil ||
+		!strings.Contains(err.Error(), "second RowDescription") {
+		t.Fatalf("err = %v", err)
+	}
+
+	c, s = pipeConns(t)
+	go func() {
+		for range 3 {
+			s.recv()
+		}
+		s.send('1', nil)
+		var b writeBuf
+		b.int16(0)
+		s.send('t', b)
+		s.send('t', b)
+		s.sendFlush('Z', []byte{'I'})
+	}()
+	if _, err := c.Describe("SELECT 1"); err == nil ||
+		!strings.Contains(err.Error(), "second ParameterDescription") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// The ordinary answer - one ParameterDescription, then NoData - is fine.
+	c, s = pipeConns(t)
+	go func() {
+		for range 3 {
+			s.recv()
+		}
+		s.send('1', nil)
+		var b writeBuf
+		b.int16(1)
+		b.int32(23)
+		s.send('t', b)
+		s.send('n', nil)
+		s.sendFlush('Z', []byte{'I'})
+	}()
+	st, err := c.Describe("UPDATE t SET a = $1")
+	if err != nil || len(st.ParamOIDs) != 1 || st.ParamOIDs[0] != 23 || len(st.Columns) != 0 {
+		t.Fatalf("st = %+v, err = %v", st, err)
+	}
+}

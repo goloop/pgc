@@ -49,47 +49,57 @@ func InferParamNames(q Query, count int) map[int]string {
 // neighborName looks around one $N token for a column it is compared with.
 func neighborName(toks []token, i int) string {
 	// LIMIT $1 / OFFSET $1.
-	if prev := at(toks, i-1); prev.kind == tokIdent {
-		switch prev.val {
-		case "limit", "offset":
-			return prev.val
-		}
+	if prev := at(toks, i-1); isWord(prev, "limit") || isWord(prev, "offset") {
+		return prev.val
 	}
 	// column op $1 (op includes LIKE/ILIKE keywords).
 	if isCompare(at(toks, i-1)) {
-		if id := at(toks, i-2); id.kind == tokIdent && !isKeyword(id.val) {
+		if id := at(toks, i-2); isColumn(id) {
 			return id.val
 		}
 	}
-	// $1 op column.
+	// $1 op column, where column may be qualified: $1 = p."order".
 	if isCompare(at(toks, i+1)) {
-		if id := at(toks, i+2); id.kind == tokIdent && !isKeyword(id.val) {
+		if id := chainEnd(toks, i+2); isColumn(id) {
 			return id.val
 		}
 	}
 	// column IN ($1).
-	if at(toks, i-1).val == "(" && at(toks, i-2).val == "in" {
-		if id := at(toks, i-3); id.kind == tokIdent && !isKeyword(id.val) {
+	if isPunct(at(toks, i-1), "(") && isWord(at(toks, i-2), "in") {
+		if id := at(toks, i-3); isColumn(id) {
 			return id.val
 		}
 	}
 	// column = ANY($1) / ALL($1).
-	if at(toks, i-1).val == "(" &&
-		(at(toks, i-2).val == "any" || at(toks, i-2).val == "all") &&
+	if isPunct(at(toks, i-1), "(") &&
+		(isWord(at(toks, i-2), "any") || isWord(at(toks, i-2), "all")) &&
 		isCompare(at(toks, i-3)) {
-		if id := at(toks, i-4); id.kind == tokIdent && !isKeyword(id.val) {
+		if id := at(toks, i-4); isColumn(id) {
 			return id.val
 		}
 	}
 	// $1 = ANY(column) / ALL(column).
 	if isCompare(at(toks, i+1)) &&
-		(at(toks, i+2).val == "any" || at(toks, i+2).val == "all") &&
-		at(toks, i+3).val == "(" {
-		if id := at(toks, i+4); id.kind == tokIdent && !isKeyword(id.val) {
+		(isWord(at(toks, i+2), "any") || isWord(at(toks, i+2), "all")) &&
+		isPunct(at(toks, i+3), "(") {
+		if id := chainEnd(toks, i+4); isColumn(id) {
 			return id.val
 		}
 	}
 	return ""
+}
+
+// chainEnd returns the last identifier of a qualified name starting at i
+// (t.col, s.t.col), or the token at i itself when no chain starts there. The
+// tokens before a parameter already end in the column; after it the scan
+// starts at the qualifier and must walk to the column.
+func chainEnd(toks []token, i int) token {
+	t := at(toks, i)
+	for t.kind == tokIdent && isPunct(at(toks, i+1), ".") && at(toks, i+2).kind == tokIdent {
+		i += 2
+		t = toks[i]
+	}
+	return t
 }
 
 // insertValues matches INSERT INTO t (c1, c2, ...) VALUES (...) and names
@@ -97,7 +107,7 @@ func neighborName(toks []token, i int) string {
 func insertValues(toks []token, names map[int]string) {
 	i := 0
 	for ; i < len(toks); i++ {
-		if toks[i].val == "insert" && at(toks, i+1).val == "into" {
+		if isWord(toks[i], "insert") && isWord(at(toks, i+1), "into") {
 			break
 		}
 	}
@@ -107,26 +117,26 @@ func insertValues(toks []token, names map[int]string) {
 
 	// Skip the (possibly qualified) table name to the column list.
 	i += 2
-	for i < len(toks) && (toks[i].kind == tokIdent || toks[i].val == ".") {
+	for i < len(toks) && (toks[i].kind == tokIdent || isPunct(toks[i], ".")) {
 		i++
 	}
-	if at(toks, i).val != "(" {
+	if !isPunct(at(toks, i), "(") {
 		return
 	}
 
 	var cols []string
-	for i++; i < len(toks) && toks[i].val != ")"; i++ {
+	for i++; i < len(toks) && !isPunct(toks[i], ")"); i++ {
 		if toks[i].kind == tokIdent {
 			cols = append(cols, toks[i].val)
 		}
 	}
 
 	for ; i < len(toks); i++ {
-		if toks[i].val == "values" {
+		if isWord(toks[i], "values") {
 			break
 		}
 	}
-	if i == len(toks) || at(toks, i+1).val != "(" {
+	if i == len(toks) || !isPunct(at(toks, i+1), "(") {
 		return
 	}
 
@@ -143,23 +153,23 @@ func insertValues(toks []token, names map[int]string) {
 		argToks = nil
 	}
 	for i += 2; i < len(toks) && depth > 0; i++ {
-		switch toks[i].val {
-		case "(":
+		switch {
+		case isPunct(toks[i], "("):
 			depth++
-		case ")":
+		case isPunct(toks[i], ")"):
 			depth--
 			if depth == 0 {
 				commit()
 				return
 			}
-		case ",":
+		case isPunct(toks[i], ","):
 			if depth == 1 {
 				commit()
 				arg++
 				continue
 			}
 		}
-		if depth >= 1 && toks[i].val != ")" {
+		if depth >= 1 && !isPunct(toks[i], ")") {
 			argToks = append(argToks, toks[i])
 		}
 	}
@@ -178,9 +188,10 @@ const (
 )
 
 type token struct {
-	kind tokKind
-	val  string
-	num  int
+	kind   tokKind
+	val    string
+	num    int
+	quoted bool // a "quoted identifier": spelled exactly, never a keyword
 }
 
 var empty = token{kind: tokOther}
@@ -192,9 +203,28 @@ func at(toks []token, i int) token {
 	return toks[i]
 }
 
+// isWord reports whether t is the unquoted keyword w. A quoted identifier
+// spelled the same ("values", "in") is a column or table, not the keyword.
+func isWord(t token, w string) bool {
+	return t.kind == tokIdent && !t.quoted && t.val == w
+}
+
+// isPunct reports whether t is the punctuation p.
+func isPunct(t token, p string) bool {
+	return t.kind == tokPunct && t.val == p
+}
+
+// isColumn reports whether t can name a column next to a parameter: any
+// quoted identifier, or an unquoted one that is not a keyword. The quotes are
+// exactly what makes "order" or "group" a column in PostgreSQL, so they must
+// not be filtered as keywords.
+func isColumn(t token) bool {
+	return t.kind == tokIdent && (t.quoted || !isKeyword(t.val))
+}
+
 func isCompare(t token) bool {
 	if t.kind == tokIdent {
-		return t.val == "like" || t.val == "ilike"
+		return !t.quoted && (t.val == "like" || t.val == "ilike")
 	}
 	if t.kind != tokOp {
 		return false
@@ -206,8 +236,8 @@ func isCompare(t token) bool {
 	return false
 }
 
-// isKeyword filters the words that must never become a parameter name when
-// they appear next to an operator.
+// isKeyword filters the unquoted words that must never become a parameter
+// name when they appear next to an operator.
 func isKeyword(s string) bool {
 	switch s {
 	case "select", "from", "where", "and", "or", "not", "null", "is",
@@ -251,10 +281,11 @@ func tokenize(sql string) []token {
 			toks = append(toks, token{kind: tokOther})
 
 		case c == '"':
-			// A quoted identifier keeps its exact spelling.
+			// A quoted identifier keeps its exact spelling and is never a
+			// keyword, however it is spelled.
 			var val string
 			val, s = readQuoted(s)
-			toks = append(toks, token{kind: tokIdent, val: val})
+			toks = append(toks, token{kind: tokIdent, val: val, quoted: true})
 
 		case c == '$':
 			n, rest, ok := readParam(s)

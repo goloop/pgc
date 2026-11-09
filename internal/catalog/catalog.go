@@ -22,11 +22,12 @@ type Querier interface {
 // Type is one pg_type row.
 type Type struct {
 	OID      uint32 `json:"oid"`
-	Name     string `json:"name"`           // typname, e.g. int8
-	Kind     byte   `json:"kind"`           // typtype: b base, e enum, d domain
-	Category byte   `json:"category"`       // typcategory: A marks arrays
-	Elem     uint32 `json:"elem,omitempty"` // element type OID for arrays
-	Base     uint32 `json:"base,omitempty"` // base type OID for domains
+	Name     string `json:"name"`             // typname, e.g. int8
+	Schema   string `json:"schema,omitempty"` // namespace name, e.g. pg_catalog
+	Kind     byte   `json:"kind"`             // typtype: b base, e enum, d domain
+	Category byte   `json:"category"`         // typcategory: A marks arrays
+	Elem     uint32 `json:"elem,omitempty"`   // element type OID for arrays
+	Base     uint32 `json:"base,omitempty"`   // base type OID for domains
 }
 
 // Table is one pg_class relation with its live columns.
@@ -163,8 +164,8 @@ func (c *Catalog) loadTypes(q Querier, oids []uint32) error {
 			return nil
 		}
 		rows, err := q.Query(
-			"SELECT oid, typname, typtype, typcategory, typelem, typbasetype " +
-				"FROM pg_catalog.pg_type WHERE oid IN (" + list + ")")
+			"SELECT t.oid, t.typname, t.typtype, t.typcategory, t.typelem, t.typbasetype, n.nspname " +
+				"FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid=t.typnamespace WHERE t.oid IN (" + list + ")")
 		if err != nil {
 			return fmt.Errorf("catalog: types: %w", err)
 		}
@@ -174,6 +175,9 @@ func (c *Catalog) loadTypes(q Querier, oids []uint32) error {
 				return err
 			}
 			t := Type{OID: oid, Name: row[1].S}
+			if len(row) > 6 {
+				t.Schema = row[6].S
+			}
 			if row[2].S != "" {
 				t.Kind = row[2].S[0]
 			}

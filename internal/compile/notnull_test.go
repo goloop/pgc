@@ -29,6 +29,13 @@ func TestNeverNull(t *testing.T) {
 		"-1",
 		"true",
 		"FALSE",
+		"'2026-01-01'::timestamp with time zone",
+		"'2026-01-01'::timestamp(3) with time zone",
+		"'1 day'::interval day to second",
+		"'a'::character varying(10)[]",
+		// " AS " inside the literal is text, not an alias; the one after it is.
+		"' AS x' AS v",
+		`'a' AS "x AS y"`,
 	}
 	for _, e := range proven {
 		if !neverNull(e) {
@@ -62,6 +69,14 @@ func TestNeverNull(t *testing.T) {
 		"a + b",
 		"NULL",
 		"null::text",
+
+		// The cast is only the start of a larger expression.
+		"1::int + NULL",
+		"0::bigint - a",
+		"true::boolean AND NULL",
+		"1::numeric(10,2) + (NULL)",
+		"1::numeric(a)",
+		"'",
 
 		// A cast to a user-defined type runs a user-defined function, which
 		// may be non-strict and return NULL for a non-null input.

@@ -455,3 +455,71 @@ SELECT a$b FROM t`
 		t.Errorf("an identifier with $ was misread: %q", stmts[2])
 	}
 }
+
+// Only BEGIN ATOMIC opens a routine body. A function or a parameter named
+// begin is an identifier, and the semicolons after it still split - so a
+// ROLLBACK hidden behind such a function is seen and refused.
+func TestSplitStatementsRoutineNamedBegin(t *testing.T) {
+	sql := "CREATE FUNCTION begin() RETURNS int LANGUAGE sql AS $$SELECT 1$$; " +
+		"CREATE FUNCTION f(begin int) RETURNS int LANGUAGE sql AS $$SELECT 1$$; " +
+		"CREATE DOMAIN atomic AS int; " +
+		"CREATE FUNCTION g(begin atomic) RETURNS int LANGUAGE sql AS $$SELECT 1$$; " +
+		"ROLLBACK; BEGIN;"
+	stmts := splitStatements(sql)
+	if len(stmts) != 6 {
+		t.Fatalf("got %d statements:\n%s", len(stmts), strings.Join(stmts, "\n===\n"))
+	}
+	if transactionControl(stmts[4]) != "ROLLBACK" || transactionControl(stmts[5]) != "BEGIN" {
+		t.Errorf("transaction control not seen: %q, %q", stmts[4], stmts[5])
+	}
+}
+
+// Comments are whitespace: BEGIN /* ... */ ATOMIC still opens the body.
+func TestSplitStatementsBeginAtomicWithComment(t *testing.T) {
+	sql := "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN /* c */ -- c\n ATOMIC SELECT 1; END; SELECT 2;"
+	stmts := splitStatements(sql)
+	if len(stmts) != 2 || !strings.HasSuffix(stmts[0], "END") {
+		t.Fatalf("got %v", stmts)
+	}
+}
+
+// A dollar-quote tag may hold letters beyond ASCII; the body is one statement.
+func TestSplitStatementsNonASCIITag(t *testing.T) {
+	stmts := splitStatements("DO $é$ BEGIN PERFORM 1; END $é$; SELECT 5;")
+	if len(stmts) != 2 || !strings.HasSuffix(stmts[0], "END $é$") {
+		t.Fatalf("got %v", stmts)
+	}
+}
+
+// A started or failed record whose file has since been deleted is still a
+// half-finished migration, not merely drift: -allow-drift must not run past it.
+func TestRunStopsAtAHalfFinishedFileThatIsGone(t *testing.T) {
+	dir := writeMigrations(t, map[string]string{
+		"002_b.sql": "CREATE TABLE b (id int);",
+	})
+	for _, state := range []string{"started", "failed"} {
+		db := &fakeDB{
+			applied: map[string]string{"001_a.sql": "h"},
+			states:  map[string]string{"001_a.sql": state},
+		}
+		_, err := Run(db, dir, Options{AllowDrift: true})
+		if err == nil || !strings.Contains(err.Error(), "resolve") {
+			t.Fatalf("%s: err = %v, want a pointer to resolve", state, err)
+		}
+		if db.has("CREATE TABLE b") {
+			t.Fatalf("%s: a later file ran", state)
+		}
+		list, err := Status(db, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if list[0].Name != "001_a.sql" && list[1].Name != "001_a.sql" {
+			t.Fatalf("status = %+v", list)
+		}
+		for _, m := range list {
+			if m.Name == "001_a.sql" && m.State != state {
+				t.Errorf("status of the gone file = %q, want %q", m.State, state)
+			}
+		}
+	}
+}

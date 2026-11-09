@@ -360,10 +360,17 @@ func compare(files []file, history map[string]row) []Migration {
 		}
 		list = append(list, m)
 	}
+	// A record whose file is gone is missing - unless it is still started
+	// or failed: a half-finished file is a problem before it is a missing
+	// one, and drift tolerance must not hide it.
 	var missing []Migration
 	for name, r := range history {
 		if !seen[name] {
-			missing = append(missing, Migration{Name: name, State: "missing", AppliedAt: r.at})
+			state := "missing"
+			if r.state != stateApplied {
+				state = r.state
+			}
+			missing = append(missing, Migration{Name: name, State: state, AppliedAt: r.at})
 		}
 	}
 	sort.Slice(missing, func(i, j int) bool { return missing[i].Name < missing[j].Name })

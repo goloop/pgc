@@ -542,3 +542,184 @@ func TestOverrideRulesOutTheModel(t *testing.T) {
 		t.Errorf("a no-op override should keep the model:\n%s", src)
 	}
 }
+
+// An :exec or :execrows query discards its rows, so nothing of their shape
+// may reach the generated file: no row struct, and no import that only the
+// result would have needed.
+func TestExecKeepsNothingOfTheRows(t *testing.T) {
+	sql := "UPDATE users SET email = $1 RETURNING id, email"
+	dir := writeQueries(t, "-- name: Touch :exec\n"+sql+";\n\n-- name: TouchN :execrows\n"+sql+";\n")
+	db := &fakeDB{statements: map[string]*pgwire.Statement{
+		sql: {ParamOIDs: []uint32{25},
+			Columns: []pgwire.Column{usersCol(1, "id", 20), usersCol(2, "email", 25)}},
+	}}
+	res, err := Run(db, testConfig(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.Files {
+		if f.Name != "users.sql.go" {
+			continue
+		}
+		src := string(f.Data)
+		if strings.Contains(src, "Row struct") {
+			t.Errorf("an exec query grew a row struct:\n%s", src)
+		}
+		for _, want := range []string{
+			"func (q *Queries) Touch(ctx context.Context, email string) error {",
+			"func (q *Queries) TouchN(ctx context.Context, email string) (int64, error) {",
+		} {
+			if !strings.Contains(src, want) {
+				t.Errorf("missing %q in:\n%s", want, src)
+			}
+		}
+	}
+}
+
+// A query may not take the name of a method the plumbing declares.
+func TestQueryNamedLikePlumbingIsRefused(t *testing.T) {
+	sql := "SELECT id, email, bio FROM users WHERE id = $1"
+	dir := writeQueries(t, "-- name: WithTx :one\n"+sql+";\n")
+	db := &fakeDB{statements: map[string]*pgwire.Statement{
+		sql: {ParamOIDs: []uint32{20}, Columns: []pgwire.Column{
+			usersCol(1, "id", 20), usersCol(2, "email", 25), usersCol(3, "bio", 25)}},
+	}}
+	if _, err := Run(db, testConfig(dir)); err == nil ||
+		!strings.Contains(err.Error(), "collides") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// clashDB serves a table whose columns spell the same Go field, and an enum
+// whose labels spell the same constant.
+type clashDB struct{ fakeDB }
+
+func (f *clashDB) Query(sql string) ([][]pgwire.Value, error) {
+	v := func(s string) pgwire.Value { return pgwire.Value{S: s, Valid: true} }
+	switch {
+	case strings.Contains(sql, "pg_enum"):
+		return [][]pgwire.Value{{v("300"), v("in-progress")}, {v("300"), v("in_progress")}}, nil
+	case strings.Contains(sql, "pg_type"):
+		return [][]pgwire.Value{
+			{v("20"), v("int8"), v("b"), v("N"), v("0"), v("0")},
+			{v("300"), v("state"), v("e"), v("E"), v("0"), v("0")},
+		}, nil
+	case strings.Contains(sql, "pg_attribute"):
+		return [][]pgwire.Value{
+			{v("200"), v("1"), v("user_id"), v("20"), v("t")},
+			{v("200"), v("2"), v("user-ID"), v("20"), v("t")},
+		}, nil
+	case strings.Contains(sql, "pg_class"):
+		return [][]pgwire.Value{{v("200"), v("jobs"), v("public")}}, nil
+	}
+	return nil, nil
+}
+
+// Two columns that become one Go field are refused rather than emitted as a
+// struct that does not compile. The query is a full-table match, so the
+// fields are the model's, not a row struct's.
+func TestModelFieldClashIsRefused(t *testing.T) {
+	sql := `SELECT user_id, "user-ID" FROM jobs`
+	dir := writeQueries(t, "-- name: Jobs :many\n"+sql+";\n")
+	db := &clashDB{fakeDB{statements: map[string]*pgwire.Statement{
+		sql: {Columns: []pgwire.Column{
+			{Name: "user_id", TypeOID: 20, TableOID: 200, Attnum: 1},
+			{Name: "user-ID", TypeOID: 20, TableOID: 200, Attnum: 2},
+		}},
+	}}}
+	cfg := testConfig(dir)
+	cfg.Rename = nil
+	_, err := Run(db, cfg)
+	if err == nil || !strings.Contains(err.Error(), "both become the field UserID") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// Two enum labels that become one constant are refused.
+func TestEnumLabelClashIsRefused(t *testing.T) {
+	sql := "SELECT user_id FROM jobs WHERE s = $1"
+	dir := writeQueries(t, "-- name: Jobs :many\n"+sql+";\n")
+	db := &clashDB{fakeDB{statements: map[string]*pgwire.Statement{
+		sql: {ParamOIDs: []uint32{300},
+			Columns: []pgwire.Column{{Name: "user_id", TypeOID: 20, TableOID: 200, Attnum: 1}}},
+	}}}
+	cfg := testConfig(dir)
+	cfg.Rename = nil
+	_, err := Run(db, cfg)
+	if err == nil || !strings.Contains(err.Error(), "StateInProgress") ||
+		!strings.Contains(err.Error(), "collides") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// timeDB is the users fixture with a timestamptz column.
+type timeDB struct{ fakeDB }
+
+func (f *timeDB) Query(sql string) ([][]pgwire.Value, error) {
+	v := func(s string) pgwire.Value { return pgwire.Value{S: s, Valid: true} }
+	switch {
+	case strings.Contains(sql, "pg_type"):
+		return [][]pgwire.Value{
+			{v("20"), v("int8"), v("b"), v("N"), v("0"), v("0")},
+			{v("25"), v("text"), v("b"), v("S"), v("0"), v("0")},
+			{v("1184"), v("timestamptz"), v("b"), v("D"), v("0"), v("0")},
+		}, nil
+	case strings.Contains(sql, "pg_attribute"):
+		return [][]pgwire.Value{
+			{v("100"), v("1"), v("id"), v("20"), v("t")},
+			{v("100"), v("2"), v("email"), v("25"), v("t")},
+			{v("100"), v("3"), v("bio"), v("25"), v("f")},
+			{v("100"), v("4"), v("created_at"), v("1184"), v("t")},
+		}, nil
+	case strings.Contains(sql, "pg_class"):
+		return [][]pgwire.Value{{v("100"), v("users"), v("public")}}, nil
+	}
+	return nil, nil
+}
+
+// An :exec query whose RETURNING column would need an import (time) must not
+// drag that import into a file - or a Querier - that never mentions the type.
+func TestExecResultNeedsNoImport(t *testing.T) {
+	sql := "UPDATE users SET email = $1 RETURNING created_at"
+	dir := writeQueries(t, "-- name: Touch :exec\n"+sql+";\n")
+	db := &timeDB{fakeDB{statements: map[string]*pgwire.Statement{
+		sql: {ParamOIDs: []uint32{25}, Columns: []pgwire.Column{usersCol(4, "created_at", 1184)}},
+	}}}
+	cfg := testConfig(dir)
+	cfg.Interface = true
+	res, err := Run(db, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range res.Files {
+		if f.Name == "users.sql.go" || f.Name == "querier.go" {
+			if strings.Contains(string(f.Data), `"time"`) {
+				t.Errorf("%s imports time for a discarded result:\n%s", f.Name, f.Data)
+			}
+		}
+	}
+}
+
+// A custom type written with a pointer or slice prefix in "types", or wrapped
+// for nullability by the compiler, keeps its import in the generated file.
+func TestCustomTypeImportSurvivesWrapping(t *testing.T) {
+	sql := "SELECT id, email, bio FROM users WHERE id = $1"
+	for _, mapping := range []string{"example.com/custom.Value", "*example.com/custom.Value", "[]example.com/custom.Value"} {
+		dir := writeQueries(t, "-- name: GetUser :one\n"+sql+";\n")
+		db := &fakeDB{statements: map[string]*pgwire.Statement{
+			sql: {ParamOIDs: []uint32{20}, Columns: []pgwire.Column{
+				usersCol(1, "id", 20), usersCol(2, "email", 25), usersCol(3, "bio", 25)}},
+		}}
+		cfg := testConfig(dir)
+		cfg.Types = map[string]string{"text": mapping} // bio is nullable text
+		res, err := Run(db, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range res.Files {
+			if f.Name == "models.go" && !strings.Contains(string(f.Data), `"example.com/custom"`) {
+				t.Errorf("%s: models.go lost the import:\n%s", mapping, f.Data)
+			}
+		}
+	}
+}

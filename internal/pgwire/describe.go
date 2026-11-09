@@ -1,6 +1,9 @@
 package pgwire
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Column describes one result column of a statement, as reported by the
 // backend's RowDescription. TableOID and Attnum are non-zero only when the
@@ -57,6 +60,7 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 
 	st := &Statement{}
 	var srvErr *ServerError
+	var gotParams, gotRows bool // each description arrives once
 	for {
 		typ, payload, err := c.recv()
 		if err != nil {
@@ -65,6 +69,10 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 		switch typ {
 		case '1': // ParseComplete
 		case 't': // ParameterDescription
+			if gotParams {
+				return nil, c.fail(errors.New("pgwire: a second ParameterDescription for one statement"))
+			}
+			gotParams = true
 			r := &readBuf{b: payload}
 			n := int(r.int16())
 			if n < 0 {
@@ -78,6 +86,10 @@ func (c *Conn) Describe(query string) (*Statement, error) {
 				return nil, c.fail(r.err)
 			}
 		case 'T': // RowDescription
+			if gotRows {
+				return nil, c.fail(errors.New("pgwire: a second RowDescription for one statement"))
+			}
+			gotRows = true
 			r := &readBuf{b: payload}
 			n := int(r.int16())
 			if n < 0 {

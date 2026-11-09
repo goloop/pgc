@@ -213,9 +213,12 @@ done:
 		return "", fmt.Errorf("type %q: want \"import/path.Type\"", expr)
 	}
 	imp, typ := rest[:dot], rest[dot+1:]
-	final := prefix + c.selectorFor(imp) + "." + typ
-	c.typeImports[final] = imp
-	return final, nil
+	// The import is registered under the bare selector.Type: the emitter
+	// looks it up through every wrapper the expression may gain or already
+	// carry (*T, []T, sql.Null[T]).
+	bare := c.selectorFor(imp) + "." + typ
+	c.typeImports[bare] = imp
+	return prefix + bare, nil
 }
 
 // selectorFor returns the package selector to use for an import path, keeping

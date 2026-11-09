@@ -195,6 +195,9 @@ func (n *Namer) paramNames(q Query) []string {
 	for _, name := range []string{"context", "iter"} {
 		taken[name] = true
 	}
+	if q.Command == "iter" {
+		taken["yield"] = true // the callback the generated closure receives
+	}
 	reserveTypeIdents := func(expr string) {
 		for _, id := range typeIdentRe.FindAllString(expr, -1) {
 			taken[id] = true
@@ -210,6 +213,17 @@ func (n *Namer) paramNames(q Query) []string {
 	names := make([]string, len(q.Params))
 	for i, p := range q.Params {
 		names[i] = unique(n.paramName(p.Name), taken)
+	}
+	return names
+}
+
+// paramFieldNames allocates distinct exported fields after case conversion.
+// Joined tables may infer the same parameter name more than once.
+func (n *Namer) paramFieldNames(q Query) []string {
+	taken := make(map[string]bool)
+	names := make([]string, len(q.Params))
+	for i, p := range q.Params {
+		names[i] = unique(n.CamelCase(p.Name), taken)
 	}
 	return names
 }

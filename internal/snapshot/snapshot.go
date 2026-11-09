@@ -216,6 +216,7 @@ func (f *File) Warnings(migrationsDir string) []string {
 // which is what a CI job wants to hear.
 func (f *File) Compare(fresh *File) []string {
 	var diffs []string
+	oldRefs, newRefs := references(f.Catalog), references(fresh.Catalog)
 
 	was := map[string]Query{}
 	for _, q := range f.Queries {
@@ -238,7 +239,7 @@ func (f *File) Compare(fresh *File) []string {
 		case old.SQL != q.SQL:
 			diffs = append(diffs, fmt.Sprintf("%s: %s has different SQL",
 				q.File, q.Name))
-		case !sameColumns(old, q):
+		case !sameColumns(old, q, oldRefs, newRefs):
 			diffs = append(diffs, fmt.Sprintf(
 				"%s: %s describes differently now - the schema has moved",
 				q.File, q.Name))
@@ -261,107 +262,122 @@ func (f *File) Compare(fresh *File) []string {
 	return diffs
 }
 
+// catalogRefs resolves database-local object numbers to schema identities.
+// Raw OIDs remain in the record for offline generation, but they cannot be
+// compared across a recreated database or a separately migrated CI database.
+type catalogRefs struct {
+	types  map[uint32]string
+	tables map[uint32]string
+}
+
+func references(s catalog.Snapshot) catalogRefs {
+	r := catalogRefs{types: map[uint32]string{0: ""}, tables: map[uint32]string{0: ""}}
+	for _, t := range s.Types {
+		r.types[t.OID] = objectName(t.Schema, t.Name)
+	}
+	for _, t := range s.Tables {
+		r.tables[t.OID] = objectName(t.Schema, t.Name)
+	}
+	return r
+}
+
+func objectName(schema, name string) string {
+	// A zero byte separates identifiers without confusing a quoted dot with a
+	// namespace separator. PostgreSQL identifiers cannot contain a zero byte.
+	return schema + "\x00" + name
+}
+
+func refName(names map[uint32]string, oid uint32) string {
+	if name, ok := names[oid]; ok {
+		return name
+	}
+	return fmt.Sprintf("oid %d", oid)
+}
+
+func displayName(schema, name string) string {
+	if schema == "" {
+		return name
+	}
+	return schema + "." + name
+}
+
+func enumTypes(s catalog.Snapshot, r catalogRefs) map[string][]string {
+	result := map[string][]string{}
+	for raw, labels := range s.Enums {
+		oid, err := strconv.ParseUint(raw, 10, 32)
+		if err != nil {
+			result["oid "+raw] = labels
+			continue
+		}
+		result[refName(r.types, uint32(oid))] = labels
+	}
+	return result
+}
+
 // compareCatalog reports schema movement that no query describes differently
-// for. An enum gaining a label is the plain case: every statement still has
-// the same parameters and columns, while the generated constants, the Values
-// list and the parser all change. Comparing only the queries would call that
-// snapshot current.
+// for, such as an enum gaining a label without changing its name or query type.
 func compareCatalog(was, now catalog.Snapshot) []string {
 	var diffs []string
-
-	names := map[uint32]string{}
-	for _, t := range now.Types {
-		names[t.OID] = t.Name
-	}
+	oldRefs, newRefs := references(was), references(now)
+	oldTypes, newTypes := map[string]catalog.Type{}, map[string]catalog.Type{}
 	for _, t := range was.Types {
-		if _, ok := names[t.OID]; !ok {
-			names[t.OID] = t.Name
-		}
-	}
-	name := func(oid uint32) string {
-		if n, ok := names[oid]; ok {
-			return n
-		}
-		return fmt.Sprintf("oid %d", oid)
-	}
-
-	oldTypes := map[uint32]catalog.Type{}
-	for _, t := range was.Types {
-		oldTypes[t.OID] = t
+		oldTypes[objectName(t.Schema, t.Name)] = t
 	}
 	for _, t := range now.Types {
-		if old, ok := oldTypes[t.OID]; !ok {
-			diffs = append(diffs, fmt.Sprintf("the type %s is new", t.Name))
-		} else if old != t {
-			diffs = append(diffs, fmt.Sprintf("the type %s has changed", t.Name))
-		}
+		newTypes[objectName(t.Schema, t.Name)] = t
 	}
-	for _, t := range was.Types {
-		if _, ok := names[t.OID]; ok {
-			if !containsType(now.Types, t.OID) {
-				diffs = append(diffs, fmt.Sprintf("the type %s is gone", t.Name))
-			}
-		}
-	}
-
-	for key, labels := range now.Enums {
-		old, ok := was.Enums[key]
+	for key, t := range newTypes {
+		old, ok := oldTypes[key]
 		switch {
 		case !ok:
-			diffs = append(diffs, fmt.Sprintf("the enum %s is new", enumName(key, name)))
+			diffs = append(diffs, fmt.Sprintf("the type %s is new", displayName(t.Schema, t.Name)))
+		case old.Kind != t.Kind || old.Category != t.Category || refName(oldRefs.types, old.Elem) != refName(newRefs.types, t.Elem) || refName(oldRefs.types, old.Base) != refName(newRefs.types, t.Base):
+			diffs = append(diffs, fmt.Sprintf("the type %s has changed", displayName(t.Schema, t.Name)))
+		}
+	}
+	for key, t := range oldTypes {
+		if _, ok := newTypes[key]; !ok {
+			diffs = append(diffs, fmt.Sprintf("the type %s is gone", displayName(t.Schema, t.Name)))
+		}
+	}
+	oldEnums, newEnums := enumTypes(was, oldRefs), enumTypes(now, newRefs)
+	for key, labels := range newEnums {
+		name := strings.ReplaceAll(key, "\x00", ".")
+		old, ok := oldEnums[key]
+		switch {
+		case !ok:
+			diffs = append(diffs, fmt.Sprintf("the enum %s is new", name))
 		case !equalStrings(old, labels):
-			diffs = append(diffs, fmt.Sprintf(
-				"the values of enum %s have changed", enumName(key, name)))
+			diffs = append(diffs, fmt.Sprintf("the values of enum %s have changed", name))
 		}
 	}
-	for key := range was.Enums {
-		if _, ok := now.Enums[key]; !ok {
-			diffs = append(diffs, fmt.Sprintf("the enum %s is gone", enumName(key, name)))
+	for key := range oldEnums {
+		if _, ok := newEnums[key]; !ok {
+			diffs = append(diffs, fmt.Sprintf("the enum %s is gone", strings.ReplaceAll(key, "\x00", ".")))
 		}
 	}
-
-	oldTables := map[uint32]*catalog.Table{}
+	oldTables, newTables := map[string]*catalog.Table{}, map[string]*catalog.Table{}
 	for _, t := range was.Tables {
-		oldTables[t.OID] = t
-	}
-	newTables := map[uint32]*catalog.Table{}
-	for _, t := range now.Tables {
-		newTables[t.OID] = t
+		oldTables[objectName(t.Schema, t.Name)] = t
 	}
 	for _, t := range now.Tables {
-		old, ok := oldTables[t.OID]
+		newTables[objectName(t.Schema, t.Name)] = t
+	}
+	for key, t := range newTables {
+		old, ok := oldTables[key]
 		switch {
 		case !ok:
-			diffs = append(diffs, fmt.Sprintf("the table %s is new", t.Name))
-		case !equalTables(old, t):
-			diffs = append(diffs, fmt.Sprintf("the columns of table %s have changed", t.Name))
+			diffs = append(diffs, fmt.Sprintf("the table %s is new", displayName(t.Schema, t.Name)))
+		case !equalTables(old, t, oldRefs, newRefs):
+			diffs = append(diffs, fmt.Sprintf("the columns of table %s have changed", displayName(t.Schema, t.Name)))
 		}
 	}
-	for _, t := range was.Tables {
-		if _, ok := newTables[t.OID]; !ok {
-			diffs = append(diffs, fmt.Sprintf("the table %s is gone", t.Name))
+	for key, t := range oldTables {
+		if _, ok := newTables[key]; !ok {
+			diffs = append(diffs, fmt.Sprintf("the table %s is gone", displayName(t.Schema, t.Name)))
 		}
 	}
-
 	return diffs
-}
-
-// enumName renders an enum's type name from its recorded OID key.
-func enumName(key string, name func(uint32) string) string {
-	oid, err := strconv.ParseUint(key, 10, 32)
-	if err != nil {
-		return "oid " + key
-	}
-	return name(uint32(oid))
-}
-
-func containsType(types []catalog.Type, oid uint32) bool {
-	for _, t := range types {
-		if t.OID == oid {
-			return true
-		}
-	}
-	return false
 }
 
 func equalStrings(a, b []string) bool {
@@ -376,12 +392,17 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-func equalTables(a, b *catalog.Table) bool {
+func equalTables(a, b *catalog.Table, oldRefs, newRefs catalogRefs) bool {
 	if a.Schema != b.Schema || a.Name != b.Name || len(a.Columns) != len(b.Columns) {
 		return false
 	}
 	for i := range a.Columns {
-		if a.Columns[i] != b.Columns[i] {
+		old, next := a.Columns[i], b.Columns[i]
+		if refName(oldRefs.types, old.TypeOID) != refName(newRefs.types, next.TypeOID) {
+			return false
+		}
+		old.TypeOID, next.TypeOID = 0, 0
+		if old != next {
 			return false
 		}
 	}
@@ -390,17 +411,23 @@ func equalTables(a, b *catalog.Table) bool {
 
 // sameColumns reports whether two records describe the same result shape and
 // parameters.
-func sameColumns(a, b Query) bool {
+func sameColumns(a, b Query, oldRefs, newRefs catalogRefs) bool {
 	if len(a.Params) != len(b.Params) || len(a.Columns) != len(b.Columns) {
 		return false
 	}
 	for i := range a.Params {
-		if a.Params[i] != b.Params[i] {
+		if refName(oldRefs.types, a.Params[i]) != refName(newRefs.types, b.Params[i]) {
 			return false
 		}
 	}
 	for i := range a.Columns {
-		if a.Columns[i] != b.Columns[i] {
+		old, next := a.Columns[i], b.Columns[i]
+		if refName(oldRefs.types, old.TypeOID) != refName(newRefs.types, next.TypeOID) || refName(oldRefs.tables, old.TableOID) != refName(newRefs.tables, next.TableOID) {
+			return false
+		}
+		old.TypeOID, next.TypeOID = 0, 0
+		old.TableOID, next.TableOID = 0, 0
+		if old != next {
 			return false
 		}
 	}

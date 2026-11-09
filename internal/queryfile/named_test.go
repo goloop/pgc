@@ -300,3 +300,34 @@ func TestNamedUnicode(t *testing.T) {
 		t.Errorf("names = %v, want [q]", names)
 	}
 }
+
+// An "@" that continues an operator written without a space - "doc @@query",
+// "a <@b" - is not a placeholder, while "x=@id" still is: the rewrite is what
+// makes that comparison valid SQL. A dollar-quote tag may hold letters beyond
+// ASCII, and its body is still left alone.
+func TestRewriteNamedOperatorAdjacent(t *testing.T) {
+	cases := []struct {
+		sql, want string
+		names     []string
+	}{
+		{"SELECT doc @@query FROM t", "SELECT doc @@query FROM t", nil},
+		{"SELECT a <@b FROM t", "SELECT a <@b FROM t", nil},
+		{"SELECT a ?@b FROM t", "SELECT a ?@b FROM t", nil},
+		{"SELECT 1 WHERE x=@id", "SELECT 1 WHERE x=$1", []string{"id"}},
+		{"SELECT 1 WHERE x>@min AND y<=@max", "SELECT 1 WHERE x>$1 AND y<=$2", []string{"min", "max"}},
+		{"SELECT $é$@x$é$ WHERE a = @a", "SELECT $é$@x$é$ WHERE a = $1", []string{"a"}},
+	}
+	for _, c := range cases {
+		got, names, err := rewriteNamed(c.sql)
+		if err != nil {
+			t.Errorf("%s: %v", c.sql, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.sql, got, c.want)
+		}
+		if strings.Join(names, ",") != strings.Join(c.names, ",") {
+			t.Errorf("%s: names = %v, want %v", c.sql, names, c.names)
+		}
+	}
+}

@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-11-09
+
+### Fixed
+- Schema verification compared database-local OIDs, so recreating a database
+  made an unchanged schema look stale. Tables and types are now compared by
+  schema and name. Regenerate older lock files once against a database to
+  record type namespaces before verifying across databases.
+- Parameter name inference treated a quoted identifier spelled like a keyword
+  (`"order"`, `"group"`, `"limit"`, `"end"`) as the keyword, so `"order" = $4`
+  fell back to `arg4` and the generated `...Params` field was `Arg4`. Quotes
+  make such a word a column, and the parameter is now named after it. Code
+  that referred to the fallback name changes on regeneration.
+- A qualified column on the right of a comparison (`$1 = p.id`) named the
+  parameter after the table alias (`p`); it is now named after the column.
+- An `@` that continues an operator written without a space (`doc @@query`,
+  `a <@b`) was rewritten as a named parameter. It is left alone. A parameter
+  right after `<`, `?`, `~` or `@` therefore needs a space before the `@`
+  (`x < @id`); after `=`, `>` and arithmetic signs it does not.
+- `migrate` treated a function or a parameter named `begin` as the start of
+  a routine body and read everything after it as one statement, so a
+  `ROLLBACK` hidden behind it went unnoticed. Only `BEGIN ATOMIC` opens a
+  body now.
+- Dollar-quote tags with letters beyond ASCII (`$é$ ... $é$`) were split and
+  rewritten inside; they are now read as PostgreSQL reads them.
+- A `started` or `failed` migration whose file had been deleted was reported
+  as merely missing, and `-allow-drift` ran past it. It is reported in its
+  own state and stops the run until it is resolved.
+- Nullability inference panicked on a select-list item whose string literal
+  contained ` AS ` (`' AS x' AS v`), and took `1::int + NULL` for a constant.
+- An `:exec` or `:execrows` query with `RETURNING` pulled in an import
+  (`time`, say) that only the discarded result needed, and the file did not
+  compile; it also declared a row struct nothing used. The result of such a
+  query is now dropped before emission.
+- A custom type (`"types"` in `pgc.json`) wrapped for nullability or into a
+  slice (`*big.Int`, `sql.Null[big.Int]`, `[]big.Int`) lost its import.
+- Generated locals could shadow the query's own SQL constant (`Zero :iter`
+  sent an empty string as the statement), take a predeclared identifier
+  (`ListAppend :many` declared `append`), shadow a package the body uses
+  (`ListTime :many` declared `time`) or collide with the `yield` callback of
+  an `:iter` body. The locals the body declares are now allocated against
+  the constant, the parameters, the types and packages spelled in the
+  signature and Go's predeclared identifiers.
+- Two columns that become one Go field (`user_id` and `"user-ID"`), two enum
+  labels that become one constant, and a query named like a method of the
+  plumbing (`WithTx`) were emitted as code that does not compile. Each is now
+  refused with a message naming the pair.
+- `generate` replaced a file in the output directory that pgc had not
+  written when a generated file had the same name. It now stops and asks for
+  the file to be moved or removed.
+- The wire client accepted any number of parameter and row descriptions for
+  one statement; a second one is now an error.
+
 ## [1.0.2] - 2026-10-18
 
 Bound query result storage and timeouts, and build SQL without repeated copies.

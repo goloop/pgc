@@ -42,7 +42,8 @@ func rewriteNamed(sql string) (string, []string, error) {
 			i++
 			continue
 		}
-		if c != '@' || i+1 >= len(sql) || !isNameStart(sql[i+1]) {
+		if c != '@' || i+1 >= len(sql) || !isNameStart(sql[i+1]) ||
+			i > 0 && continuesOperator(sql[i-1]) {
 			b.WriteByte(c)
 			i++
 			continue
@@ -73,6 +74,15 @@ func rewriteNamed(sql string) (string, []string, error) {
 		return sql, nil, nil
 	}
 	return b.String(), names, nil
+}
+
+// continuesOperator reports whether an "@" right after b is the tail of a
+// multi-character operator - "<@", "@@", "?@" - rather than the start of a
+// placeholder, so "doc @@query" and "a <@b" are left alone. An "=" or an
+// arithmetic sign before "@" still opens a placeholder: "x=@id" is how people
+// write a comparison without spaces, and the rewrite is what makes it valid.
+func continuesOperator(b byte) bool {
+	return b == '@' || b == '<' || b == '?' || b == '~'
 }
 
 // literalRun reports the end of the stretch of SQL starting at i that must be
@@ -167,7 +177,7 @@ func blockComment(sql string, i int) int {
 func dollarQuoted(sql string, i int) (int, bool) {
 	j := i + 1
 	for j < len(sql) && sql[j] != '$' {
-		if !isNameChar(sql[j]) || j == i+1 && isDigit(sql[j]) {
+		if !isTagChar(sql[j]) || j == i+1 && isDigit(sql[j]) {
 			return 0, false
 		}
 		j++
@@ -182,6 +192,12 @@ func dollarQuoted(sql string, i int) (int, bool) {
 		return 0, false
 	}
 	return j + 1 + end + len(tag), true
+}
+
+// isTagChar reports whether b can appear in a dollar-quote tag: the
+// characters of an identifier, letters beyond ASCII included.
+func isTagChar(b byte) bool {
+	return isNameChar(b) || b >= 0x80
 }
 
 // isNameStart reports whether b can begin a parameter name.

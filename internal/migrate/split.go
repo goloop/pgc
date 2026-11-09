@@ -17,13 +17,17 @@ func splitStatements(sql string) []string {
 	// PROCEDURE body, where a semicolon does not end the statement.
 	var words []string
 	depth := 0
+	// parens is the parenthesis depth; the BEGIN ATOMIC that opens a body
+	// stands outside the argument list, where "begin atomic" may be a
+	// parameter and its type.
+	parens := 0
 
 	flush := func(end int) {
 		s := strings.TrimSpace(sql[start:end])
 		if s != "" {
 			stmts = append(stmts, s)
 		}
-		words, depth = words[:0], 0
+		words, depth, parens = words[:0], 0, 0
 	}
 
 	for i < len(sql) {
@@ -61,8 +65,15 @@ func splitStatements(sql string) []string {
 				words = append(words, word)
 			}
 			switch word {
-			case "begin", "case":
-				if routineBody(words) {
+			case "begin":
+				// Only the BEGIN ATOMIC of a CREATE FUNCTION or PROCEDURE
+				// opens a body; a function, a parameter or a column named
+				// begin does not.
+				if routineBody(words) && parens == 0 && nextWordIs(sql, j, "atomic") {
+					depth++
+				}
+			case "case":
+				if depth > 0 {
 					depth++
 				}
 			case "end":
@@ -71,12 +82,47 @@ func splitStatements(sql string) []string {
 				}
 			}
 			i = j
+		case c == '(':
+			parens++
+			i++
+		case c == ')':
+			if parens > 0 {
+				parens--
+			}
+			i++
 		default:
 			i++
 		}
 	}
 	flush(len(sql))
 	return stmts
+}
+
+// nextWordIs reports whether the next word after position i, past any
+// whitespace and comments, is w (compared case-insensitively).
+func nextWordIs(sql string, i int, w string) bool {
+	for i < len(sql) {
+		switch {
+		case sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r' || sql[i] == '\f':
+			i++
+			continue
+		case strings.HasPrefix(sql[i:], "--"):
+			if nl := strings.IndexByte(sql[i:], '\n'); nl >= 0 {
+				i += nl + 1
+				continue
+			}
+			return false
+		case strings.HasPrefix(sql[i:], "/*"):
+			i = skipBlockComment(sql, i)
+			continue
+		}
+		break
+	}
+	j := i
+	for j < len(sql) && isIdentByte(sql[j]) {
+		j++
+	}
+	return strings.EqualFold(sql[i:j], w)
 }
 
 // routineBody reports whether a statement's first words open a CREATE
@@ -244,7 +290,9 @@ func skipDollarQuoted(sql string, i int) int {
 	return i + 1
 }
 
+// isTagChar reports whether c can appear in a dollar-quote tag: identifier
+// characters, letters beyond ASCII included.
 func isTagChar(c byte) bool {
 	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
-		c >= '0' && c <= '9'
+		c >= '0' && c <= '9' || c >= 0x80
 }

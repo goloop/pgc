@@ -91,3 +91,20 @@ func TestWriteFileAtomic(t *testing.T) {
 		t.Fatalf("content %q, entries %d", got, len(entries))
 	}
 }
+
+// A file in the output directory that pgc did not write is never replaced,
+// even when a generated file wants its name: generate stops and says so.
+func TestPlanOutputRefusesToOverwriteHandWrittenFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "db.go"), []byte("package db\n\n// written by hand\n"), 0o644)
+	_, err := planOutput(dir, []gen.OutFile{genFile("db.go", "")})
+	if err == nil || !strings.Contains(err.Error(), "not written by pgc") {
+		t.Fatalf("err = %v", err)
+	}
+	// The same file, once it carries the header, is pgc's to replace.
+	os.WriteFile(filepath.Join(dir, "db.go"), genFile("db.go", "// old\n").Data, 0o644)
+	plan, err := planOutput(dir, []gen.OutFile{genFile("db.go", "")})
+	if err != nil || len(plan.write) != 1 {
+		t.Fatalf("plan = %+v, err = %v", plan, err)
+	}
+}

@@ -161,8 +161,11 @@ func Build(cfg config.Config, ds []Described, cat *catalog.Catalog) (*Result, er
 func checkNameCollisions(in gen.Input) error {
 	owners := map[string]string{
 		"DBTX": "the generated plumbing", "Queries": "the generated plumbing",
-		"Querier": "the generated plumbing",
+		"Querier": "the generated plumbing", "New": "the generated plumbing",
 	}
+	// Methods of Queries live in their own namespace; WithTx is the one the
+	// plumbing declares.
+	methods := map[string]string{"WithTx": "the generated plumbing"}
 	claim := func(name, owner string) error {
 		if prev, ok := owners[name]; ok {
 			return fmt.Errorf(
@@ -177,10 +180,18 @@ func checkNameCollisions(in gen.Input) error {
 		if err := claim(m.Name, "the model of table "+m.Table); err != nil {
 			return err
 		}
+		if err := checkFieldNames(in.Namer, m.Fields, "the model of table "+m.Table); err != nil {
+			return err
+		}
 	}
 	for _, e := range in.Enums {
 		if err := claim(e.Name, "the enum "+e.DBName); err != nil {
 			return err
+		}
+		for _, v := range e.Values {
+			if err := claim(v.Name, fmt.Sprintf("the label %q of enum %s", v.Value, e.DBName)); err != nil {
+				return err
+			}
 		}
 		// The enum's companions are package-level names too.
 		if err := claim(e.Name+"Values", "the values list of enum "+e.DBName); err != nil {
@@ -192,6 +203,11 @@ func checkNameCollisions(in gen.Input) error {
 	}
 	for _, f := range in.Files {
 		for _, q := range f.Queries {
+			if prev, ok := methods[q.Name]; ok {
+				return fmt.Errorf("query %s collides with %s; rename the query",
+					q.Name, prev)
+			}
+			methods[q.Name] = "the query " + q.Name
 			if q.Ret.Kind == gen.RetRow {
 				if err := claim(q.Ret.Type, "the row struct of "+q.Name); err != nil {
 					return err
@@ -203,6 +219,25 @@ func checkNameCollisions(in gen.Input) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// checkFieldNames rejects a struct whose columns map to the same Go field:
+// user_id and "user-ID" both become UserID, and two fields of one name is a
+// struct that does not compile.
+func checkFieldNames(n *gen.Namer, fields []gen.Field, owner string) error {
+	seen := map[string]string{}
+	for _, f := range fields {
+		name := n.CamelCase(f.Name)
+		if f.GoName != "" {
+			name = f.GoName
+		}
+		if prev, ok := seen[name]; ok {
+			return fmt.Errorf("%s: columns %q and %q both become the field %s; "+
+				"rename one of them", owner, prev, f.Name, name)
+		}
+		seen[name] = f.Name
 	}
 	return nil
 }
@@ -314,6 +349,11 @@ func (c *compiler) compileQuery(q qfQuery, st *pgwire.Statement) (gen.Query, err
 		if ret.Kind == gen.RetNone {
 			return fail(fmt.Errorf("statement returns no rows; use :exec"))
 		}
+	case "exec", "execrows":
+		// The rows are discarded, so nothing of their shape may reach the
+		// generated file: a row struct nobody reads, or an import only the
+		// result type needed, which would not compile.
+		ret = gen.Ret{Kind: gen.RetNone}
 	}
 
 	// An outer join makes the catalog wrong: it reports the joined table's

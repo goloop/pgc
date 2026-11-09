@@ -26,7 +26,7 @@ func v(s string) pgwire.Value { return pgwire.Value{S: s, Valid: true} }
 func TestLoad(t *testing.T) {
 	q := &fakeQuerier{byNeedle: map[string][][]pgwire.Value{
 		"pg_type": {
-			{v("20"), v("int8"), v("b"), v("N"), v("0"), v("0")},
+			{v("20"), v("int8"), v("b"), v("N"), v("0"), v("0"), v("pg_catalog")},
 			{v("25"), v("text"), v("b"), v("S"), v("0"), v("0")},
 		},
 		"pg_class": {
@@ -46,6 +46,9 @@ func TestLoad(t *testing.T) {
 
 	if name, ok := c.TypeName(20); !ok || name != "int8" {
 		t.Errorf("TypeName(20) = %q %v", name, ok)
+	}
+	if typ, _ := c.Type(20); typ.Schema != "pg_catalog" {
+		t.Fatalf("type schema = %q", typ.Schema)
 	}
 	table, ok := c.Table(100)
 	if !ok || table.Name != "users" || len(table.Columns) != 3 {

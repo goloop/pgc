@@ -137,7 +137,8 @@ func isLiteral(e string) bool {
 
 	if e[0] == '\'' {
 		// A quoted string, and nothing after the quote that closes it.
-		return strings.HasSuffix(e, "'") && !strings.Contains(e[1:len(e)-1], "'")
+		return len(e) >= 2 && strings.HasSuffix(e, "'") &&
+			!strings.Contains(e[1:len(e)-1], "'")
 	}
 	switch strings.ToLower(e) {
 	case "true", "false":
@@ -168,26 +169,44 @@ var builtinTypes = map[string]bool{
 	"uuid": true, "varchar": true,
 }
 
-// builtinType reports whether a cast target names a built-in type, ignoring a
-// length or precision, an array suffix and any schema qualification of
-// pg_catalog.
+// castGrammar are the words that may follow a built-in type name in a cast:
+// "double precision", "timestamp(3) with time zone", "interval day to second".
+var castGrammar = map[string]bool{
+	"precision": true, "varying": true, "with": true, "without": true,
+	"time": true, "zone": true, "year": true, "month": true, "day": true,
+	"hour": true, "minute": true, "second": true, "to": true,
+}
+
+// builtinType reports whether a cast target is a built-in type and nothing
+// else: the name, an optional length or precision in parentheses, the words
+// the type's grammar allows, an array suffix, a pg_catalog qualification.
+// Anything more ("int + NULL", "boolean AND NULL") makes the cast the start
+// of a larger expression, which is not a constant.
 func builtinType(cast string) bool {
-	name := strings.TrimSpace(cast)
+	name := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(cast)), "pg_catalog.")
 	if i := strings.IndexByte(name, '('); i >= 0 {
-		if !strings.HasSuffix(name, ")") {
+		j := strings.IndexByte(name, ')')
+		if j < i {
 			return false
 		}
-		name = name[:i]
+		for _, r := range name[i+1 : j] {
+			if !(r >= '0' && r <= '9' || r == ',' || r == ' ') {
+				return false
+			}
+		}
+		name = name[:i] + " " + name[j+1:]
 	}
-	name = strings.TrimSpace(strings.TrimSuffix(name, "[]"))
-	name = strings.TrimPrefix(strings.ToLower(name), "pg_catalog.")
-
-	// "double precision", "timestamp with time zone" and friends: the first
-	// word carries the identity, the rest is grammar.
-	if i := strings.IndexAny(name, " \t\n"); i >= 0 {
-		name = name[:i]
+	name = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(name), "[]"))
+	words := strings.Fields(name)
+	if len(words) == 0 {
+		return false
 	}
-	return builtinTypes[name]
+	for _, w := range words[1:] {
+		if !castGrammar[w] {
+			return false
+		}
+	}
+	return builtinTypes[words[0]]
 }
 
 // stripAlias removes the output name from a select-list item, so the
@@ -221,7 +240,8 @@ func stripAlias(e string) string {
 	return e
 }
 
-// aliasKeyword finds a top-level " AS " and returns where the expression ends.
+// aliasKeyword finds a top-level " AS " - outside parentheses, strings and
+// quoted identifiers - and returns where the expression ends.
 func aliasKeyword(e string) (int, bool) {
 	depth := 0
 	for i := 0; i < len(e); i++ {
@@ -230,6 +250,19 @@ func aliasKeyword(e string) (int, bool) {
 			depth++
 		case ')':
 			depth--
+		case '\'', '"':
+			// Skip the quoted run; a doubled quote is an escaped one.
+			q := e[i]
+			for i++; i < len(e); i++ {
+				if e[i] == q {
+					if i+1 < len(e) && e[i+1] == q {
+						i++
+						continue
+					}
+					break
+				}
+			}
+			continue
 		}
 		if depth != 0 || i == 0 || !isSpaceByte(e[i-1]) {
 			continue

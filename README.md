@@ -22,7 +22,7 @@ pgc is stable from v1: the commands and their exit codes, `pgc.json`, the
 `pgc.lock.json` format, the migration history table, the connection URL and the
 shape of the generated code do not change incompatibly within v1. The
 "Compatibility" section of [DOC.md](DOC.md#compatibility) spells out what that
-covers. Pin the version in CI (`@v1.0.1` rather than `@latest`).
+covers. Pin the version in CI (`@v1.0.3` rather than `@latest`).
 
 Building from source requires Go 1.24 or newer. Prebuilt binaries for
 Linux, macOS and Windows are attached to the
@@ -157,6 +157,7 @@ PGC_DATABASE_URL="postgres://postgres:test@127.0.0.1:55432/postgres?sslmode=disa
 
 MIT - see [LICENSE](LICENSE).
 
-## Release v1.0.2
+## Release v1.0.3
 
-Bound query result storage and timeouts, and build SQL without repeated copies.
+Fix parameter names, generated code, schema verification and migration checks.
+See [CHANGELOG.md](CHANGELOG.md) for details and regeneration notes.

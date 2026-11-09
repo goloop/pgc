@@ -378,7 +378,7 @@ func emitImports(in Input, base []string, types []string) string {
 		if strings.Contains(t, "sql.") {
 			need["database/sql"] = true
 		}
-		if imp := in.TypeImports[t]; imp != "" {
+		if imp := in.TypeImports[bareType(t)]; imp != "" {
 			need[imp] = true
 		}
 	}
@@ -422,6 +422,24 @@ func emitImports(in Input, base []string, types []string) string {
 	return b.String()
 }
 
+// bareType strips the nullability and slice wrappers a type expression may
+// have gained after its import was registered: *big.Int, []big.Int and
+// sql.Null[big.Int] all need the import recorded for big.Int.
+func bareType(t string) string {
+	for {
+		switch {
+		case strings.HasPrefix(t, "*"):
+			t = t[1:]
+		case strings.HasPrefix(t, "[]"):
+			t = t[2:]
+		case strings.HasPrefix(t, "sql.Null[") && strings.HasSuffix(t, "]"):
+			t = t[len("sql.Null[") : len(t)-1]
+		default:
+			return t
+		}
+	}
+}
+
 // external reports whether an import path names a module outside the
 // standard library.
 func external(imp string) bool {
@@ -436,11 +454,12 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 
 	// Params struct from four arguments up.
 	useParamsStruct := q.UsesParamStruct()
+	fieldNames := in.Namer.paramFieldNames(q)
 	if useParamsStruct {
 		fmt.Fprintf(b, "\n// %sParams holds the arguments of %s.\n", q.Name, q.Name)
 		fmt.Fprintf(b, "type %sParams struct {\n", q.Name)
-		for _, p := range q.Params {
-			fmt.Fprintf(b, "\t%s %s\n", in.Namer.CamelCase(p.Name), p.Type)
+		for i, p := range q.Params {
+			fmt.Fprintf(b, "\t%s %s\n", fieldNames[i], p.Type)
 		}
 		b.WriteString("}\n")
 	}
@@ -455,9 +474,30 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 	b.WriteString("\n")
 	b.WriteString(wrapComment(q.Doc))
 
-	taken := map[string]bool{
-		"ctx": true, "row": true, "rows": true, "res": true,
-		"err": true, "arg": true, "q": true,
+	// Every local the body declares is allocated against the names it
+	// already refers to: the body identifiers, the parameters, Go's
+	// predeclared identifiers (an accumulator named append would break
+	// the append call) and the query's own SQL constant, which a local
+	// declared before the query call would shadow - the driver would be
+	// handed an empty string instead of the statement.
+	taken := map[string]bool{constName: true}
+	for name := range bodyIdents {
+		taken[name] = true
+	}
+	for name := range predeclared {
+		taken[name] = true
+	}
+	// The packages and types the body spells (time in *time.Time, the row
+	// struct, an adapter) may not be shadowed by a local either.
+	for _, expr := range append(queryTypes(q), q.Ret.Helper) {
+		for _, id := range typeIdentRe.FindAllString(expr, -1) {
+			taken[id] = true
+		}
+	}
+	for _, p := range q.Params {
+		for _, id := range typeIdentRe.FindAllString(p.Helper, -1) {
+			taken[id] = true
+		}
 	}
 	argNames := in.Namer.paramNames(q)
 	for _, name := range argNames {
@@ -475,7 +515,7 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 	var parts []string
 	for i, p := range q.Params {
 		if useParamsStruct {
-			parts = append(parts, wrap("arg."+in.Namer.CamelCase(p.Name), p))
+			parts = append(parts, wrap("arg."+fieldNames[i], p))
 			continue
 		}
 		parts = append(parts, wrap(argNames[i], p))
@@ -527,24 +567,25 @@ func emitQuery(b *strings.Builder, in Input, q Query) {
 		fmt.Fprintf(b, "\treturn %s, rows.Err()\n}\n", sliceVar)
 
 	case "iter":
+		yieldVar := unique("yield", taken)
 		zeroVar := unique("zero", taken)
 		fmt.Fprintf(b, "func (q *Queries) %s(ctx context.Context%s) iter.Seq2[%s, error] {\n",
 			q.Name, sig, q.Ret.Type)
-		fmt.Fprintf(b, "\treturn func(yield func(%s, error) bool) {\n", q.Ret.Type)
+		fmt.Fprintf(b, "\treturn func(%s func(%s, error) bool) {\n", yieldVar, q.Ret.Type)
 		fmt.Fprintf(b, "\t\tvar %s %s\n", zeroVar, q.Ret.Type)
 		fmt.Fprintf(b, "\t\trows, err := q.db.QueryContext(ctx, %s%s)\n", constName, callArgs)
-		fmt.Fprintf(b, "\t\tif err != nil {\n\t\t\tyield(%s, err)\n\t\t\treturn\n\t\t}\n",
-			zeroVar)
+		fmt.Fprintf(b, "\t\tif err != nil {\n\t\t\t%s(%s, err)\n\t\t\treturn\n\t\t}\n",
+			yieldVar, zeroVar)
 		b.WriteString("\t\tdefer rows.Close()\n\n")
 		b.WriteString("\t\tfor rows.Next() {\n")
 		fmt.Fprintf(b, "\t\t\tvar %s %s\n", itemVar, q.Ret.Type)
 		fmt.Fprintf(b, "\t\t\tif err := rows.Scan(%s); err != nil {\n",
 			scanArgs(in.Namer, itemVar, q.Ret))
-		fmt.Fprintf(b, "\t\t\t\tyield(%s, err)\n\t\t\t\treturn\n\t\t\t}\n", zeroVar)
-		fmt.Fprintf(b, "\t\t\tif !yield(%s, nil) {\n\t\t\t\treturn\n\t\t\t}\n", itemVar)
+		fmt.Fprintf(b, "\t\t\t\t%s(%s, err)\n\t\t\t\treturn\n\t\t\t}\n", yieldVar, zeroVar)
+		fmt.Fprintf(b, "\t\t\tif !%s(%s, nil) {\n\t\t\t\treturn\n\t\t\t}\n", yieldVar, itemVar)
 		b.WriteString("\t\t}\n")
-		fmt.Fprintf(b, "\t\tif err := rows.Err(); err != nil {\n\t\t\tyield(%s, err)\n\t\t}\n",
-			zeroVar)
+		fmt.Fprintf(b, "\t\tif err := rows.Err(); err != nil {\n\t\t\t%s(%s, err)\n\t\t}\n",
+			yieldVar, zeroVar)
 		b.WriteString("\t}\n}\n")
 	}
 }
@@ -624,7 +665,7 @@ func sliceVarName(queryName string) string {
 		}
 	}
 	name := lowerFirst(rest)
-	if name == "" || goKeywords[name] {
+	if name == "" || goKeywords[name] || predeclared[name] {
 		return "items"
 	}
 	return name
